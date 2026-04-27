@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>imrockey</title>
+    <meta
+      name="description"
+      content="imrockey — turn your OpenRouter chats into reusable project memory: chat, summarize, search, and generate Context Packs you can paste into the next AI session."
+    />
+    <meta name="theme-color" content="#1a73e8" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* Inline boot splash so the first paint isn't a blank white square. */
+      #app:empty::before {
+        content: '';
+        position: fixed;
+        inset: 50% auto auto 50%;
+        width: 28px;
+        height: 28px;
+        margin: -14px 0 0 -14px;
+        border-radius: 50%;
+        border: 3px solid #e5e7eb;
+        border-top-color: #1a73e8;
+        animation: imrockey-boot-spin 0.8s linear infinite;
+      }
+      @keyframes imrockey-boot-spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
