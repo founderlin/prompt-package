@@ -1,61 +1,96 @@
 <template>
-  <aside class="sidebar">
-    <div class="sidebar__brand">
-      <svg class="brand-logo-svg" width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <!-- Main box body -->
-        <path d="M21 8L12 12L3 8L12 4L21 8Z" fill="#3B82F6" stroke="#3B82F6" stroke-width="1.5" stroke-linejoin="round"/>
-        <path d="M21 8V16L12 20L3 16V8L12 12L21 8Z" fill="#2563EB" stroke="#2563EB" stroke-width="1.5" stroke-linejoin="round"/>
-        <!-- Terminal prompt on the box -->
-        <path d="M7 13L9 15L7 17" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="10" y1="17" x2="13" y2="17" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-        <!-- Sparkle/Star -->
-        <path d="M19 3L19.5 5L21 5.5L19.5 6L19 8L18.5 6L17 5.5L18.5 5L19 3Z" fill="#3B82F6"/>
-      </svg>
-      <h1 class="brand-name">
-        <span class="brand-name__prompt">Prompt</span>
-        <span class="brand-name__package">Package</span>
-      </h1>
+  <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
+    <div class="sidebar__header">
+      <div class="sidebar__brand">
+        <div class="brand-logo-wrap">
+          <img :src="logo1" alt="Logo part 1" class="logo-img logo-img--1" />
+          <img v-if="!collapsed" :src="logo2" alt="Logo part 2" class="logo-img logo-img--2" />
+        </div>
+      </div>
+      <button 
+        type="button" 
+        class="sidebar__toggle" 
+        @click="toggleSidebar"
+        :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+      >
+        <svg 
+          width="20" 
+          height="20" 
+          viewBox="0 0 24 24" 
+          fill="none" 
+          stroke="currentColor" 
+          stroke-width="2" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"
+          class="toggle-icon"
+        >
+          <line v-if="!collapsed" x1="18" y1="6" x2="6" y2="18"></line>
+          <line v-if="!collapsed" x1="6" y1="6" x2="18" y2="18"></line>
+          <line v-if="collapsed" x1="3" y1="12" x2="21" y2="12"></line>
+          <line v-if="collapsed" x1="3" y1="6" x2="21" y2="6"></line>
+          <line v-if="collapsed" x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
     </div>
 
     <nav class="sidebar__nav" aria-label="Primary">
-      <p class="sidebar__section-title">Workspace</p>
+      <p v-if="!collapsed" class="sidebar__section-title">Workspace</p>
+      <div v-else class="sidebar__section-divider"></div>
       <RouterLink
         v-for="item in primaryNav"
         :key="item.to"
         :to="item.to"
         class="nav-item"
         :class="{ 'nav-item--active': isActive(item) }"
+        :title="collapsed ? item.label : ''"
       >
         <span class="nav-item__icon" v-html="item.icon" aria-hidden="true" />
-        <span class="nav-item__label">{{ item.label }}</span>
+        <span v-if="!collapsed" class="nav-item__label">{{ item.label }}</span>
       </RouterLink>
     </nav>
 
     <nav class="sidebar__nav sidebar__nav--bottom" aria-label="Secondary">
-      <p class="sidebar__section-title">Account</p>
+      <p v-if="!collapsed" class="sidebar__section-title">Account</p>
+      <div v-else class="sidebar__section-divider"></div>
       <RouterLink
         v-for="item in secondaryNav"
         :key="item.to"
         :to="item.to"
         class="nav-item"
         :class="{ 'nav-item--active': isActive(item) }"
+        :title="collapsed ? item.label : ''"
       >
         <span class="nav-item__icon" v-html="item.icon" aria-hidden="true" />
-        <span class="nav-item__label">{{ item.label }}</span>
+        <span v-if="!collapsed" class="nav-item__label">{{ item.label }}</span>
       </RouterLink>
     </nav>
 
     <div class="sidebar__footer">
-      <span class="chip">MVP · v0.1.0</span>
+      <span v-if="!collapsed" class="chip">MVP · v0.1.0</span>
+      <span v-else class="dot dot--success"></span>
     </div>
   </aside>
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import logoSrc from '@/icon.jpeg'
+import logo1 from '@/assets/logo1.png'
+import logo2 from '@/assets/logo2.png'
 
 const route = useRoute()
+const collapsed = ref(false)
+
+function toggleSidebar() {
+  collapsed.value = !collapsed.value
+  // Optional: save preference to localStorage
+  localStorage.setItem('sidebar_collapsed', String(collapsed.value))
+}
+
+// Restore preference on load
+if (localStorage.getItem('sidebar_collapsed') === 'true') {
+  collapsed.value = true
+}
 
 function isActive(item) {
   const path = route.path
@@ -90,7 +125,7 @@ const secondaryNav = [
 
 <style scoped>
 .sidebar {
-  width: var(--layout-sidebar-w);
+  width: var(--layout-sidebar-w, 240px);
   flex-shrink: 0;
   background: var(--color-surface);
   border-right: 1px solid var(--color-border);
@@ -100,35 +135,70 @@ const secondaryNav = [
   top: 0;
   height: 100vh;
   padding: var(--space-5) var(--space-3);
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.sidebar--collapsed {
+  width: 72px;
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+  padding: 0 var(--space-2);
+}
+
+.sidebar--collapsed .sidebar__header {
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: 0;
 }
 
 .sidebar__brand {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-3);
-  margin-bottom: var(--space-5);
+  min-width: 0;
+  overflow: hidden;
 }
 
-.brand-logo-svg {
+.brand-logo-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
 
-.brand-name {
-  font-size: var(--text-xl);
-  font-weight: 700;
-  letter-spacing: -0.5px;
-  line-height: 1;
-  display: flex;
-  gap: 4px;
+.logo-img {
+  height: 32px;
+  width: auto;
+  object-fit: contain;
 }
 
-.brand-name__prompt {
-  color: #3b82f6; /* Matching the blue in the logo */
+.logo-img--1 {
+  width: 32px;
 }
 
-.brand-name__package {
-  color: #111827; /* Near black */
+.sidebar__toggle {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.sidebar__toggle:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
 }
 
 .sidebar__nav {
@@ -149,6 +219,13 @@ const secondaryNav = [
   color: var(--color-text-muted);
   padding: 0 var(--space-3);
   margin: var(--space-3) 0 var(--space-2);
+  white-space: nowrap;
+}
+
+.sidebar__section-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-3) var(--space-2);
 }
 
 .nav-item {
@@ -159,14 +236,19 @@ const secondaryNav = [
   border-radius: var(--radius-sm);
   font-size: var(--text-base);
   color: var(--color-text-secondary);
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: all 0.2s ease;
   text-decoration: none;
+  white-space: nowrap;
+}
+
+.sidebar--collapsed .nav-item {
+  justify-content: center;
+  padding: 12px;
 }
 
 .nav-item:hover {
   background: var(--color-surface-hover);
   color: var(--color-text-primary);
-  text-decoration: none;
 }
 
 .nav-item--active {
@@ -174,19 +256,11 @@ const secondaryNav = [
   color: var(--color-primary);
 }
 
-.nav-item--active:hover {
-  background: var(--color-primary-soft-hover);
-  color: var(--color-primary);
-}
-
 .nav-item__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.nav-item__icon :deep(svg) {
-  display: block;
+  flex-shrink: 0;
 }
 
 .nav-item__label {
@@ -197,5 +271,17 @@ const secondaryNav = [
   padding: var(--space-3);
   border-top: 1px solid var(--color-border);
   margin-top: var(--space-3);
+  display: flex;
+  justify-content: center;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot--success {
+  background: var(--color-success);
 }
 </style>
