@@ -1,6 +1,6 @@
 """LLM provider registry.
 
-Single source of truth for the three gateways imrockey supports in R14:
+Single source of truth for the three gateways promptpackage supports in R14:
 ``openrouter``, ``deepseek``, ``openai``. Adding a fourth (e.g. Together)
 should only require appending a new entry here and a model option on the
 frontend.
@@ -69,8 +69,8 @@ _PROVIDERS: dict[str, ProviderConfig] = {
         verify_path="/key",
         summary_model="openai/gpt-4o-mini",
         extra_headers={
-            "HTTP-Referer": "https://imrockey.local",
-            "X-Title": "imrockey",
+            "HTTP-Referer": "https://promptpackage.local",
+            "X-Title": "promptpackage",
         },
         docs_url="https://openrouter.ai/keys",
     ),

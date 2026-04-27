@@ -2,10 +2,7 @@
   <div class="auth-layout">
     <header class="auth-layout__brand">
       <RouterLink to="/" class="brand">
-        <div class="brand-logo-wrap">
-          <img :src="logo1" alt="Logo part 1" class="logo-img" />
-          <img :src="logo2" alt="Logo part 2" class="logo-img" />
-        </div>
+        <img class="brand-logo--full" :src="logoFull" alt="Prompt Package" />
       </RouterLink>
     </header>
 
@@ -23,8 +20,7 @@
 
 <script setup>
 import { RouterLink } from 'vue-router'
-import logo1 from '@/assets/logo1.png'
-import logo2 from '@/assets/logo2.png'
+import logoFull from '@/icon2.png'
 </script>
 
 <style scoped>
@@ -44,17 +40,18 @@ import logo2 from '@/assets/logo2.png'
 .brand {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-primary);
   text-decoration: none;
 }
 
-.brand-logo-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.brand:hover {
+  text-decoration: none;
 }
 
-.logo-img {
-  height: 32px;
+.brand-logo--full {
+  display: block;
+  height: 40px;
   width: auto;
   object-fit: contain;
 }

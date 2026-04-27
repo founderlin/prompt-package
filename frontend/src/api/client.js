@@ -2,7 +2,28 @@ import axios from 'axios'
 
 const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5001'
 
-const TOKEN_STORAGE_KEY = 'imrockey_token'
+const TOKEN_STORAGE_KEY = 'promptpackage_token'
+// Older builds stored the token under this key; migrate once then forget.
+const LEGACY_TOKEN_STORAGE_KEYS = ['imrockey_token']
+
+function migrateLegacyToken() {
+  try {
+    if (localStorage.getItem(TOKEN_STORAGE_KEY)) return
+    for (const k of LEGACY_TOKEN_STORAGE_KEYS) {
+      const legacy = localStorage.getItem(k)
+      if (legacy) {
+        localStorage.setItem(TOKEN_STORAGE_KEY, legacy)
+        localStorage.removeItem(k)
+        return
+      }
+    }
+  } catch (_e) {
+    /* ignore storage errors */
+  }
+}
+
+// Run once at module-load so subsequent reads see the migrated key.
+migrateLegacyToken()
 
 const apiClient = axios.create({
   baseURL,

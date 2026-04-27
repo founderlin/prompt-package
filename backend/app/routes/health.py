@@ -15,7 +15,7 @@ def health_check():
     return jsonify(
         {
             "status": "ok",
-            "service": current_app.config.get("APP_NAME", "imrockey-backend"),
+            "service": current_app.config.get("APP_NAME", "promptpackage-backend"),
             "version": current_app.config.get("APP_VERSION", "0.0.0"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }

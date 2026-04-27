@@ -1,95 +1,128 @@
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
-    <div class="sidebar__header">
-      <div class="sidebar__brand">
-        <div class="brand-logo-wrap">
-          <img :src="logo1" alt="Logo part 1" class="logo-img logo-img--1" />
-          <img v-if="!collapsed" :src="logo2" alt="Logo part 2" class="logo-img logo-img--2" />
-        </div>
-      </div>
-      <button 
-        type="button" 
-        class="sidebar__toggle" 
-        @click="toggleSidebar"
-        :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
-      >
-        <svg 
-          width="20" 
-          height="20" 
-          viewBox="0 0 24 24" 
-          fill="none" 
-          stroke="currentColor" 
-          stroke-width="2" 
-          stroke-linecap="round" 
-          stroke-linejoin="round"
-          class="toggle-icon"
-        >
-          <line v-if="!collapsed" x1="18" y1="6" x2="6" y2="18"></line>
-          <line v-if="!collapsed" x1="6" y1="6" x2="18" y2="18"></line>
-          <line v-if="collapsed" x1="3" y1="12" x2="21" y2="12"></line>
-          <line v-if="collapsed" x1="3" y1="6" x2="21" y2="6"></line>
-          <line v-if="collapsed" x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
-      </button>
+    <!-- Brand: icon2 (full horizontal logo) when expanded, icon1 (mark) when collapsed. -->
+    <div class="sidebar__brand">
+      <RouterLink to="/" class="brand-link" :aria-label="collapsed ? 'Prompt Package' : undefined">
+        <img
+          v-if="collapsed"
+          class="brand-logo--mark"
+          :src="logoMark"
+          alt="Prompt Package"
+        />
+        <img
+          v-else
+          class="brand-logo--full"
+          :src="logoFull"
+          alt="Prompt Package"
+        />
+      </RouterLink>
     </div>
 
     <nav class="sidebar__nav" aria-label="Primary">
-      <p v-if="!collapsed" class="sidebar__section-title">Workspace</p>
-      <div v-else class="sidebar__section-divider"></div>
+      <p v-show="!collapsed" class="sidebar__section-title">Workspace</p>
       <RouterLink
         v-for="item in primaryNav"
         :key="item.to"
         :to="item.to"
         class="nav-item"
         :class="{ 'nav-item--active': isActive(item) }"
-        :title="collapsed ? item.label : ''"
+        :title="collapsed ? item.label : undefined"
       >
         <span class="nav-item__icon" v-html="item.icon" aria-hidden="true" />
-        <span v-if="!collapsed" class="nav-item__label">{{ item.label }}</span>
+        <span class="nav-item__label">{{ item.label }}</span>
       </RouterLink>
     </nav>
 
     <nav class="sidebar__nav sidebar__nav--bottom" aria-label="Secondary">
-      <p v-if="!collapsed" class="sidebar__section-title">Account</p>
-      <div v-else class="sidebar__section-divider"></div>
+      <p v-show="!collapsed" class="sidebar__section-title">Account</p>
       <RouterLink
         v-for="item in secondaryNav"
         :key="item.to"
         :to="item.to"
         class="nav-item"
         :class="{ 'nav-item--active': isActive(item) }"
-        :title="collapsed ? item.label : ''"
+        :title="collapsed ? item.label : undefined"
       >
         <span class="nav-item__icon" v-html="item.icon" aria-hidden="true" />
-        <span v-if="!collapsed" class="nav-item__label">{{ item.label }}</span>
+        <span class="nav-item__label">{{ item.label }}</span>
       </RouterLink>
     </nav>
 
     <div class="sidebar__footer">
-      <span v-if="!collapsed" class="chip">MVP · v0.1.0</span>
-      <span v-else class="dot dot--success"></span>
+      <span v-show="!collapsed" class="chip">MVP · v0.1.0</span>
     </div>
+
+    <!-- Collapse / expand toggle. Sits on the right edge of the sidebar so
+         it visually "pokes out" and reads as the affordance that moves the
+         sidebar in and out, regardless of its current state. -->
+    <button
+      type="button"
+      class="sidebar__toggle"
+      :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+      :aria-label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+      :aria-expanded="!collapsed"
+      @click="toggle"
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <polyline v-if="collapsed" points="9 6 15 12 9 18" />
+        <polyline v-else points="15 6 9 12 15 18" />
+      </svg>
+    </button>
   </aside>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import logo1 from '@/assets/logo1.png'
-import logo2 from '@/assets/logo2.png'
+import logoFull from '@/icon2.png'
+import logoMark from '@/icon1.png'
 
 const route = useRoute()
+
+const STORAGE_KEY = 'pp_sidebar_collapsed'
 const collapsed = ref(false)
 
-function toggleSidebar() {
-  collapsed.value = !collapsed.value
-  // Optional: save preference to localStorage
-  localStorage.setItem('sidebar_collapsed', String(collapsed.value))
-}
+onMounted(() => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw === '1') collapsed.value = true
+  } catch (_e) {
+    /* ignore storage errors */
+  }
+  // Always publish the current width so panes that size against the
+  // variable (e.g. the chat shell) pick up the right value on first paint.
+  document.documentElement.style.setProperty(
+    '--layout-sidebar-w',
+    collapsed.value ? '72px' : '240px'
+  )
+})
 
-// Restore preference on load
-if (localStorage.getItem('sidebar_collapsed') === 'true') {
-  collapsed.value = true
+watch(collapsed, (next) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, next ? '1' : '0')
+  } catch (_e) {
+    /* ignore storage errors */
+  }
+  // Sync a CSS variable so other parts of the app (e.g. sticky chat
+  // layout sizing) can react without prop drilling.
+  document.documentElement.style.setProperty(
+    '--layout-sidebar-w',
+    next ? '72px' : '240px'
+  )
+})
+
+function toggle() {
+  collapsed.value = !collapsed.value
 }
 
 function isActive(item) {
@@ -125,7 +158,10 @@ const secondaryNav = [
 
 <style scoped>
 .sidebar {
-  width: var(--layout-sidebar-w, 240px);
+  /* Sidebar owns its own width so we can animate it smoothly without
+     depending on the outer layout; --layout-sidebar-w is still synced
+     from the component so other panes (e.g. chat shell) can read it. */
+  width: 240px;
   flex-shrink: 0;
   background: var(--color-surface);
   border-right: 1px solid var(--color-border);
@@ -135,76 +171,71 @@ const secondaryNav = [
   top: 0;
   height: 100vh;
   padding: var(--space-5) var(--space-3);
-  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow: hidden;
+  transition: width 0.22s ease, padding 0.22s ease;
+  z-index: 10;
 }
 
 .sidebar--collapsed {
   width: 72px;
+  padding-left: 0;
+  padding-right: 0;
 }
 
-.sidebar__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-5);
-  padding: 0 var(--space-2);
-}
-
-.sidebar--collapsed .sidebar__header {
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: 0;
-}
-
+/* ---- Brand ---- */
 .sidebar__brand {
   display: flex;
   align-items: center;
-  min-width: 0;
-  overflow: hidden;
+  justify-content: center;
+  padding: 0 var(--space-3);
+  margin-bottom: var(--space-5);
+  min-height: 40px;
 }
 
-.brand-logo-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+.sidebar--collapsed .sidebar__brand {
+  padding: 0;
 }
 
-.logo-img {
-  height: 32px;
-  width: auto;
-  object-fit: contain;
-}
-
-.logo-img--1 {
-  width: 32px;
-}
-
-.sidebar__toggle {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--color-text-muted);
+.brand-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
+  text-decoration: none;
+  width: 100%;
 }
 
-.sidebar__toggle:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
-  border-color: var(--color-border);
+.brand-link:hover {
+  text-decoration: none;
 }
 
+/* Full horizontal logo (icon2) — expanded state. Scaled to fit the
+   sidebar width while keeping its native aspect ratio. */
+.brand-logo--full {
+  display: block;
+  width: 100%;
+  max-width: 200px;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Compact square mark (icon1) — collapsed state. */
+.brand-logo--mark {
+  display: block;
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+
+/* ---- Nav sections ---- */
 .sidebar__nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding: 0 var(--space-3);
+}
+
+.sidebar--collapsed .sidebar__nav {
+  padding: 0 var(--space-2);
+  align-items: stretch;
 }
 
 .sidebar__nav--bottom {
@@ -219,13 +250,6 @@ const secondaryNav = [
   color: var(--color-text-muted);
   padding: 0 var(--space-3);
   margin: var(--space-3) 0 var(--space-2);
-  white-space: nowrap;
-}
-
-.sidebar__section-divider {
-  height: 1px;
-  background: var(--color-border);
-  margin: var(--space-3) var(--space-2);
 }
 
 .nav-item {
@@ -236,23 +260,32 @@ const secondaryNav = [
   border-radius: var(--radius-sm);
   font-size: var(--text-base);
   color: var(--color-text-secondary);
-  transition: all 0.2s ease;
+  transition: background-color 0.12s ease, color 0.12s ease;
   text-decoration: none;
+  /* Clip label crossfade inside the bounds of the item. */
+  overflow: hidden;
   white-space: nowrap;
 }
 
 .sidebar--collapsed .nav-item {
   justify-content: center;
-  padding: 12px;
+  padding: 10px 0;
+  gap: 0;
 }
 
 .nav-item:hover {
   background: var(--color-surface-hover);
   color: var(--color-text-primary);
+  text-decoration: none;
 }
 
 .nav-item--active {
   background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.nav-item--active:hover {
+  background: var(--color-primary-soft-hover);
   color: var(--color-primary);
 }
 
@@ -263,25 +296,65 @@ const secondaryNav = [
   flex-shrink: 0;
 }
 
-.nav-item__label {
-  font-weight: 500;
+.nav-item__icon :deep(svg) {
+  display: block;
 }
 
+.nav-item__label {
+  font-weight: 500;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+.sidebar--collapsed .nav-item__label {
+  opacity: 0;
+  width: 0;
+  pointer-events: none;
+}
+
+/* ---- Footer ---- */
 .sidebar__footer {
   padding: var(--space-3);
   border-top: 1px solid var(--color-border);
   margin-top: var(--space-3);
-  display: flex;
-  justify-content: center;
+  min-height: 32px;
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
+.sidebar--collapsed .sidebar__footer {
+  padding: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ---- Collapse toggle ---- */
+.sidebar__toggle {
+  position: absolute;
+  top: 24px;
+  right: -13px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  transition: background-color 0.12s ease, color 0.12s ease,
+    border-color 0.12s ease, transform 0.12s ease;
+  z-index: 11;
 }
 
-.dot--success {
-  background: var(--color-success);
+.sidebar__toggle:hover {
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  border-color: var(--color-primary);
+  transform: scale(1.05);
+}
+
+.sidebar__toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 </style>

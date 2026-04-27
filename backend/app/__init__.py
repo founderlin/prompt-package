@@ -1,4 +1,4 @@
-"""Application factory for the imrockey backend."""
+"""Application factory for the promptpackage backend."""
 
 from __future__ import annotations
 

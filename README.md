@@ -51,7 +51,7 @@ python app.py
 
 ```bash
 curl http://127.0.0.1:5001/api/health
-# {"status":"ok","service":"imrockey-backend","version":"0.1.0"}
+# {"status":"ok","service":"promptpackage-backend","version":"0.1.0"}
 ```
 
 ### 2. 启动前端（Vue）
@@ -123,7 +123,7 @@ ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet
 export FLASK_ENV=production
 export SECRET_KEY JWT_SECRET_KEY ENCRYPTION_KEY
 export CORS_ORIGINS="https://your-frontend.example.com"
-export DATABASE_URL="postgresql://user:pass@host/imrockey"   # 可选；不配则用 SQLite
+export DATABASE_URL="postgresql://user:pass@host/promptpackage"   # 可选；不配则用 SQLite
 
 gunicorn -w 4 -b 0.0.0.0:5001 'app:app'
 ```
@@ -148,7 +148,7 @@ npm run build      # 输出到 frontend/dist/
 
 ```bash
 curl https://api.your-domain.example.com/api/health
-# {"status":"ok","service":"imrockey-backend","version":"0.1.0","timestamp":"…"}
+# {"status":"ok","service":"promptpackage-backend","version":"0.1.0","timestamp":"…"}
 ```
 
 任何上层的 LB / k8s readiness probe 直接打这个端点即可。

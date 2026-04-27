@@ -131,7 +131,7 @@ class ChatCompletion:
 
 def _user_agent() -> str:
     version = current_app.config.get("APP_VERSION", "0.0.0")
-    return f"imrockey/{version}"
+    return f"promptpackage/{version}"
 
 
 def _verify_timeout() -> float:

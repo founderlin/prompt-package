@@ -34,13 +34,13 @@ def _split_csv(value: str | None) -> list[str]:
 
 def _default_database_url() -> str:
     INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
-    return f"sqlite:///{(INSTANCE_DIR / 'imrockey.sqlite3').as_posix()}"
+    return f"sqlite:///{(INSTANCE_DIR / 'promptpackage.sqlite3').as_posix()}"
 
 
 class BaseConfig:
     """Shared defaults for every environment."""
 
-    APP_NAME = "imrockey-backend"
+    APP_NAME = "promptpackage-backend"
     APP_VERSION = "0.1.0"
 
     SECRET_KEY = os.getenv("SECRET_KEY", _DEV_SECRET_KEY)

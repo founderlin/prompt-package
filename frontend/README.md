@@ -97,7 +97,7 @@ frontend/
 
 ## 认证
 
-- Token 存在 `localStorage` 的 `imrockey_token` 键。
+- Token 存在 `localStorage` 的 `promptpackage_token` 键。
 - axios 请求拦截器自动把 `Authorization: Bearer <token>` 加到每个请求。
 - 收到 401 时自动清掉本地 token，并把 store 里的用户置空。
 - `router.beforeEach` 在导航前会调用一次 `/api/auth/me` 复活会话；token 失效会被自动重定向到 `/login?redirect=…`。

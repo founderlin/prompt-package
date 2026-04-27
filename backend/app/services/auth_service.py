@@ -132,7 +132,7 @@ def _ensure_google_login_enabled() -> str:
 
 
 def login_with_google_id_token(id_token_str: str) -> User:
-    """Verify the ``id_token`` and return the imrockey ``User`` it maps to.
+    """Verify the ``id_token`` and return the promptpackage ``User`` it maps to.
 
     Lookup precedence:
       1. ``google_sub`` — stable across email changes.
@@ -170,7 +170,7 @@ def login_with_google_id_token(id_token_str: str) -> User:
 
     # No google_sub match → try email-based linking. Only when Google says
     # the email is verified, otherwise an attacker could create a Google
-    # account with a victim's unverified address and hijack the imrockey
+    # account with a victim's unverified address and hijack the promptpackage
     # account.
     if email and email_verified:
         existing = find_by_email(email)
@@ -183,7 +183,7 @@ def login_with_google_id_token(id_token_str: str) -> User:
             return existing
 
     # Brand new user.
-    new_email = email or f"google-{sub}@users.noreply.imrockey"
+    new_email = email or f"google-{sub}@users.noreply.promptpackage"
     if find_by_email(new_email) is not None:
         # Extremely unlikely race; bail with a stable error so the client
         # can ask the user to retry.

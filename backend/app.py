@@ -1,4 +1,4 @@
-"""Entrypoint for the imrockey backend.
+"""Entrypoint for the promptpackage backend.
 
 Local development:
     python app.py
