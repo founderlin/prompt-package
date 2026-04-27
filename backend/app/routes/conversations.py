@@ -14,8 +14,16 @@ Anything not owned by the caller surfaces as 404.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, abort, jsonify, request, send_file
 
+from app.services.attachment_service import (
+    AttachmentError,
+    delete as delete_attachment,
+    get_for_user as get_attachment_for_user,
+    list_for_conversation as list_attachments_for_conversation,
+    read_bytes as read_attachment_bytes,
+    upload as upload_attachment,
+)
 from app.services.chat_service import (
     MAX_LIST_LIMIT,
     ChatError,
@@ -46,6 +54,10 @@ def _error(err: ChatError):
 
 
 def _memory_error(err: MemoryError):
+    return jsonify({"error": err.code, "message": err.message}), err.status
+
+
+def _attachment_error(err: AttachmentError):
     return jsonify({"error": err.code, "message": err.message}), err.status
 
 
@@ -141,6 +153,17 @@ def index_messages(conversation_id: int):
 def create_message(conversation_id: int):
     user = get_current_user()
     data = _payload()
+    raw_ids = data.get("attachment_ids") or []
+    if not isinstance(raw_ids, list):
+        return (
+            jsonify(
+                {
+                    "error": "validation_error",
+                    "message": "attachment_ids must be a list.",
+                }
+            ),
+            400,
+        )
     try:
         user_msg, assistant_msg, convo = send_user_message(
             user,
@@ -148,14 +171,17 @@ def create_message(conversation_id: int):
             content=data.get("content"),
             model=data.get("model"),
             provider=data.get("provider"),
+            attachment_ids=raw_ids,
         )
     except ChatError as err:
         return _error(err)
+    except AttachmentError as err:
+        return _attachment_error(err)
     return (
         jsonify(
             {
                 "conversation": convo.to_dict(),
-                "user_message": user_msg.to_dict(),
+                "user_message": user_msg.to_dict(include_attachments=True),
                 "assistant_message": assistant_msg.to_dict(),
             }
         ),
@@ -196,3 +222,96 @@ def index_memories(conversation_id: int):
     except MemoryError as err:
         return _memory_error(err)
     return jsonify({"memories": [m.to_dict() for m in memories]})
+
+
+# ---------- Attachments ------------------------------------------------------
+#
+# Attachments are scoped to a conversation. Upload first (multipart/form-data)
+# to get an id, then reference ids in the next `create_message` call. Until a
+# message is sent, attachments are "detached" and can be removed freely.
+
+
+@conversations_bp.post("/<int:conversation_id>/attachments")
+@login_required
+def upload_conversation_attachment(conversation_id: int):
+    user = get_current_user()
+    file = request.files.get("file")
+    if file is None or not getattr(file, "filename", None):
+        return (
+            jsonify(
+                {
+                    "error": "validation_error",
+                    "message": "Missing uploaded file (field name: 'file').",
+                }
+            ),
+            400,
+        )
+    try:
+        data = file.read()
+    except Exception:
+        return (
+            jsonify({"error": "io_error", "message": "Could not read the upload stream."}),
+            400,
+        )
+    try:
+        att = upload_attachment(
+            user,
+            conversation_id,
+            filename=file.filename,
+            mime_type=file.mimetype,
+            data=data,
+        )
+    except AttachmentError as err:
+        return _attachment_error(err)
+    return jsonify({"attachment": att.to_dict()}), 201
+
+
+@conversations_bp.get("/<int:conversation_id>/attachments")
+@login_required
+def list_conversation_attachments(conversation_id: int):
+    user = get_current_user()
+    try:
+        rows = list_attachments_for_conversation(user, conversation_id)
+    except AttachmentError as err:
+        return _attachment_error(err)
+    return jsonify({"attachments": [a.to_dict() for a in rows]})
+
+
+@conversations_bp.delete("/<int:conversation_id>/attachments/<int:attachment_id>")
+@login_required
+def delete_conversation_attachment(conversation_id: int, attachment_id: int):
+    user = get_current_user()
+    try:
+        att = get_attachment_for_user(user, attachment_id)
+        if att.conversation_id != conversation_id:
+            abort(404)
+        delete_attachment(user, attachment_id)
+    except AttachmentError as err:
+        return _attachment_error(err)
+    return jsonify({"status": "ok"})
+
+
+@conversations_bp.get(
+    "/<int:conversation_id>/attachments/<int:attachment_id>/download"
+)
+@login_required
+def download_conversation_attachment(conversation_id: int, attachment_id: int):
+    user = get_current_user()
+    try:
+        att = get_attachment_for_user(user, attachment_id)
+    except AttachmentError as err:
+        return _attachment_error(err)
+    if att.conversation_id != conversation_id:
+        abort(404)
+    try:
+        data = read_attachment_bytes(att)
+    except AttachmentError as err:
+        return _attachment_error(err)
+    return send_file(
+        # send_file wants a path-like or file-like; BytesIO keeps things simple.
+        __import__("io").BytesIO(data),
+        mimetype=att.mime_type,
+        as_attachment=False,
+        download_name=att.filename,
+        max_age=0,
+    )

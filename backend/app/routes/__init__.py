@@ -12,6 +12,7 @@ from .memories import memories_bp
 from .projects import projects_bp
 from .search import search_bp
 from .settings import settings_bp
+from .usage import usage_bp
 
 
 def register_blueprints(app: Flask) -> None:
@@ -23,3 +24,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(memories_bp, url_prefix="/api/memories")
     app.register_blueprint(context_packs_bp, url_prefix="/api/context-packs")
     app.register_blueprint(search_bp, url_prefix="/api/search")
+    app.register_blueprint(usage_bp, url_prefix="/api/usage")

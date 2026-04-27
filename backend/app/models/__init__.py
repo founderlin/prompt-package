@@ -1,5 +1,6 @@
 """Database models."""
 
+from .attachment import Attachment
 from .context_pack import ContextPack
 from .conversation import Conversation, Message
 from .memory import KINDS as MEMORY_KINDS, Memory
@@ -9,6 +10,7 @@ from .user import User
 from .user_model_selection import UserModelSelection
 
 __all__ = [
+    "Attachment",
     "ContextPack",
     "Conversation",
     "MEMORY_KINDS",

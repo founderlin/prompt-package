@@ -6,6 +6,7 @@ cryptography==43.0.3
 requests==2.32.3
 python-dotenv==1.0.1
 google-auth==2.35.0
+pypdf==5.1.0
 
 # --- Optional production WSGI server ------------------------------------
 # Uncomment for `gunicorn -w 4 -b 0.0.0.0:5001 'app:app'` deployments.

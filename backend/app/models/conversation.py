@@ -159,8 +159,8 @@ class Message(db.Model):
 
     created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False)
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, *, include_attachments: bool = True) -> dict:
+        data = {
             "id": self.id,
             "conversation_id": self.conversation_id,
             "role": self.role,
@@ -172,3 +172,10 @@ class Message(db.Model):
             "total_tokens": self.total_tokens,
             "created_at": _isoformat(self.created_at),
         }
+        if include_attachments:
+            # ``attachments`` is a selectin-loaded relationship defined on
+            # the Attachment model. It's empty for assistant messages.
+            data["attachments"] = [
+                a.to_dict() for a in (self.attachments or [])
+            ]
+        return data

@@ -8,6 +8,7 @@ import chatApi from '@/api/chat'
 import contextPacksApi from '@/api/contextPacks'
 import memoriesApi from '@/api/memories'
 import modelSelectionsApi from '@/api/modelSelections'
+import attachmentsApi from '@/api/attachments'
 import projectsApi from '@/api/projects'
 import { useAuth } from '@/stores/auth'
 import { describeApiError } from '@/utils/errors'
@@ -79,6 +80,25 @@ const userModelsLoaded = ref(false)
 
 const selectedModel = ref(DEFAULT_MODEL_ID)
 const selectedProvider = ref(DEFAULT_PROVIDER)
+
+// Pending attachments for the *next* user message. Each entry is either:
+//   { clientId, file, status: 'uploading' | 'done' | 'error',
+//     filename, size_bytes, kind, progress, previewUrl, id?, error? }
+// `id` is populated once the server accepts the upload.
+const pendingAttachments = ref([])
+const MAX_ATTACH = 8
+const ALLOWED_MIME = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+  'image/gif',
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'text/x-markdown'
+])
+const ALLOWED_EXT = /\.(png|jpe?g|webp|gif|pdf|md|markdown|txt)$/i
 
 const projectIdNum = computed(() => Number(props.id))
 const conversationIdNum = computed(() => (props.cid ? Number(props.cid) : null))
@@ -319,6 +339,149 @@ function onModelPicked({ provider, modelId }) {
   selectedModel.value = modelId
 }
 
+// ---- Attachments ----------------------------------------------------------
+
+function _isAllowedFile(file) {
+  if (!file) return false
+  if (ALLOWED_MIME.has(file.type)) return true
+  return ALLOWED_EXT.test(file.name || '')
+}
+
+function _kindForFile(file) {
+  if (!file) return 'file'
+  const type = file.type || ''
+  if (type.startsWith('image/')) return 'image'
+  if (type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) return 'pdf'
+  return 'text'
+}
+
+function _nextClientId() {
+  return `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+async function handleAddFiles(files) {
+  if (!conversation.value) return
+  if (!Array.isArray(files) || !files.length) return
+
+  const cid = conversation.value.id
+  const accepted = []
+  const rejected = []
+  for (const f of files) {
+    if (pendingAttachments.value.length + accepted.length >= MAX_ATTACH) {
+      rejected.push({ file: f, reason: 'limit' })
+      continue
+    }
+    if (!_isAllowedFile(f)) {
+      rejected.push({ file: f, reason: 'type' })
+      continue
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      rejected.push({ file: f, reason: 'size' })
+      continue
+    }
+    accepted.push(f)
+  }
+
+  if (rejected.length) {
+    const kinds = new Set(rejected.map((r) => r.reason))
+    const parts = []
+    if (kinds.has('limit'))
+      parts.push(`only ${MAX_ATTACH} attachments per message`)
+    if (kinds.has('type'))
+      parts.push('only PDF, PNG, JPG, WEBP, GIF, TXT, MD allowed')
+    if (kinds.has('size')) parts.push('each file must be under 10 MB')
+    sendError.value = `Some files were skipped: ${parts.join('; ')}.`
+  }
+
+  // Create local rows immediately so the UI reflects uploading state.
+  const entries = accepted.map((f) => ({
+    clientId: _nextClientId(),
+    file: f,
+    status: 'uploading',
+    progress: 0,
+    filename: f.name,
+    size_bytes: f.size,
+    kind: _kindForFile(f),
+    previewUrl:
+      f.type.startsWith('image/') && typeof URL?.createObjectURL === 'function'
+        ? URL.createObjectURL(f)
+        : null,
+    id: null,
+    error: null
+  }))
+  pendingAttachments.value = [...pendingAttachments.value, ...entries]
+
+  for (const entry of entries) {
+    try {
+      const data = await attachmentsApi.upload(cid, entry.file, {
+        onProgress: (frac) => {
+          const row = pendingAttachments.value.find(
+            (r) => r.clientId === entry.clientId
+          )
+          if (row) row.progress = frac
+        }
+      })
+      const att = data?.attachment || {}
+      const row = pendingAttachments.value.find(
+        (r) => r.clientId === entry.clientId
+      )
+      if (row) {
+        row.status = 'done'
+        row.progress = 1
+        row.id = att.id
+        row.filename = att.filename || row.filename
+        row.size_bytes = att.size_bytes || row.size_bytes
+        row.kind = att.kind || row.kind
+      }
+    } catch (err) {
+      const row = pendingAttachments.value.find(
+        (r) => r.clientId === entry.clientId
+      )
+      if (row) {
+        row.status = 'error'
+        row.error = describeApiError(err, 'Upload failed')
+      }
+    }
+  }
+}
+
+async function handleRemoveAttachment(att) {
+  if (!att) return
+  // Revoke preview URL to free memory.
+  if (att.previewUrl && typeof URL?.revokeObjectURL === 'function') {
+    try {
+      URL.revokeObjectURL(att.previewUrl)
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+  // If it's already on the server, delete there too. Ignore errors —
+  // the UI removal is what the user asked for.
+  if (att.id && conversation.value) {
+    try {
+      await attachmentsApi.remove(conversation.value.id, att.id)
+    } catch (_e) {
+      /* best effort */
+    }
+  }
+  pendingAttachments.value = pendingAttachments.value.filter(
+    (r) => r.clientId !== att.clientId
+  )
+}
+
+function clearPendingAttachments() {
+  for (const a of pendingAttachments.value) {
+    if (a.previewUrl && typeof URL?.revokeObjectURL === 'function') {
+      try {
+        URL.revokeObjectURL(a.previewUrl)
+      } catch (_e) {
+        /* ignore */
+      }
+    }
+  }
+  pendingAttachments.value = []
+}
+
 async function handleSubmit(content) {
   if (!conversation.value) return
   if (!hasKeyForSelectedProvider.value) {
@@ -332,6 +495,29 @@ async function handleSubmit(content) {
     return
   }
 
+  // Block send while any attachment is still uploading.
+  const stillUploading = pendingAttachments.value.filter(
+    (a) => a.status === 'uploading'
+  )
+  if (stillUploading.length) {
+    sendError.value = 'Wait for attachments to finish uploading.'
+    return
+  }
+  // Drop any failed rows before sending — user has already seen the red state.
+  pendingAttachments.value = pendingAttachments.value.filter(
+    (a) => a.status !== 'error'
+  )
+
+  const attachmentIds = pendingAttachments.value
+    .filter((a) => a.status === 'done' && a.id != null)
+    .map((a) => a.id)
+
+  // Require either non-empty text or at least one attachment.
+  if (!content && attachmentIds.length === 0) {
+    sendError.value = 'Type a message or attach a file.'
+    return
+  }
+
   sendError.value = ''
   sending.value = true
 
@@ -341,16 +527,32 @@ async function handleSubmit(content) {
     content,
     model: modelId,
     provider: providerId,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    attachments: pendingAttachments.value
+      .filter((a) => a.status === 'done')
+      .map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        size_bytes: a.size_bytes,
+        kind: a.kind,
+        previewUrl: a.previewUrl
+      }))
   }
   messages.value = [...messages.value, tempUserMsg]
   composer.value?.reset()
 
+  // Snapshot the preview URLs before we clear, so the bubble can keep
+  // rendering the optimistic image thumbnail until the server payload
+  // lands with an authenticated download URL of its own.
+  const inflightAttachments = pendingAttachments.value.slice()
+  clearPendingAttachments()
+
   try {
     const data = await chatApi.sendMessage(conversation.value.id, {
-      content,
+      content: content || '',
       model: modelId,
-      provider: providerId
+      provider: providerId,
+      attachmentIds
     })
     messages.value = messages.value.filter((m) => m !== tempUserMsg)
     if (data?.user_message) messages.value.push(data.user_message)
@@ -361,6 +563,16 @@ async function handleSubmit(content) {
         data.conversation.model,
         data.conversation.provider
       )
+    }
+    // Revoke optimistic preview URLs now that the server has the canonical copy.
+    for (const a of inflightAttachments) {
+      if (a.previewUrl && typeof URL?.revokeObjectURL === 'function') {
+        try {
+          URL.revokeObjectURL(a.previewUrl)
+        } catch (_e) {
+          /* ignore */
+        }
+      }
     }
     loadConversations()
   } catch (err) {
@@ -635,6 +847,7 @@ onBeforeUnmount(() => {
     clearTimeout(highlightTimer)
     highlightTimer = null
   }
+  clearPendingAttachments()
 })
 </script>
 
@@ -966,7 +1179,11 @@ onBeforeUnmount(() => {
           :pending="sending"
           :disabled="composerDisabled"
           :placeholder="composerPlaceholder"
+          :attachments="pendingAttachments"
+          :max-attachments="MAX_ATTACH"
           @submit="handleSubmit"
+          @add-files="handleAddFiles"
+          @remove-attachment="handleRemoveAttachment"
         >
           <template #leading>
             <ModelPicker

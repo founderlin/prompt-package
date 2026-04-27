@@ -10,13 +10,21 @@ call to :func:`llm_service.chat_completion`. We never log it or return it.
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from app.extensions import db
-from app.models import ContextPack, Conversation, Message, User
+from app.models import Attachment, ContextPack, Conversation, Message, User
+from app.models.attachment import KIND_IMAGE, KIND_PDF, KIND_TEXT
 from app.providers import DEFAULT_PROVIDER, SUPPORTED_PROVIDERS, get_provider, normalize_provider
+from app.services.attachment_service import (
+    AttachmentError,
+    attach_to_message,
+    read_bytes as read_attachment_bytes,
+    resolve_user_attachments,
+)
 from app.services.credentials_service import CredentialsError, get_decrypted_key_for
 from app.services.llm_service import LLMError, chat_completion
 from app.services.project_service import ProjectError, get_for_user as get_project_for_user
@@ -220,11 +228,83 @@ CONTEXT_PACK_PREAMBLE = (
 )
 
 
+def _attachment_to_content_parts(att: Attachment) -> list[dict]:
+    """Render one attachment as OpenAI-compatible multimodal parts.
+
+    * Images (PNG/JPG/WEBP/GIF) → ``image_url`` part with a data URL.
+    * PDF → extracted text wrapped in a labeled block.
+    * TXT/MD → raw text wrapped in a labeled block.
+
+    Text parts include the filename so the model knows what it's looking at.
+    """
+    try:
+        data = read_attachment_bytes(att)
+    except AttachmentError as err:
+        # If the file vanished, surface a friendly text note rather than
+        # silently skipping — better to tell the model an attachment was
+        # meant to be here.
+        return [
+            {
+                "type": "text",
+                "text": (
+                    f"[Attached file '{att.filename}' is no longer available: "
+                    f"{err.message}]"
+                ),
+            }
+        ]
+
+    if att.kind == KIND_IMAGE:
+        b64 = base64.b64encode(data).decode("ascii")
+        return [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{att.mime_type};base64,{b64}",
+                    "detail": "auto",
+                },
+            }
+        ]
+
+    if att.kind in (KIND_PDF, KIND_TEXT):
+        text = att.extracted_text or ""
+        note = " (truncated)" if att.extracted_truncated else ""
+        header = (
+            f"===== Attached file: {att.filename}{note} =====\n"
+            if text
+            else f"[Attached file '{att.filename}' has no extractable text.]"
+        )
+        body = text if text else ""
+        footer = "\n===== END Attached file =====" if text else ""
+        return [{"type": "text", "text": f"{header}{body}{footer}".strip()}]
+
+    # Unknown kind — skip silently.
+    return []
+
+
+def _user_content_with_attachments(
+    text: str, attachments: list[Attachment]
+) -> str | list[dict]:
+    """Build the ``content`` field for the new user message payload.
+
+    Returns a plain string when there are no attachments (keeps the
+    upstream request small and maximally compatible). Otherwise
+    returns a list of content parts in OpenAI's multimodal format.
+    """
+    if not attachments:
+        return text
+
+    parts: list[dict] = [{"type": "text", "text": text}]
+    for att in attachments:
+        parts.extend(_attachment_to_content_parts(att))
+    return parts
+
+
 def _build_message_payload(
     history: list[Message],
     new_user_text: str,
     *,
     context_pack: ContextPack | None = None,
+    attachments: list[Attachment] | None = None,
 ) -> list[dict]:
     """Build the OpenRouter messages payload.
 
@@ -242,7 +322,14 @@ def _build_message_payload(
             }
         )
     payload.extend({"role": m.role, "content": m.content} for m in trimmed)
-    payload.append({"role": "user", "content": new_user_text})
+    payload.append(
+        {
+            "role": "user",
+            "content": _user_content_with_attachments(
+                new_user_text, attachments or []
+            ),
+        }
+    )
     return payload
 
 
@@ -253,11 +340,14 @@ def send_user_message(
     content: str,
     model: str | None = None,
     provider: str | None = None,
+    attachment_ids: list[int] | None = None,
 ) -> tuple[Message, Message, Conversation]:
     """Persist the user's message, call the right LLM provider, persist the reply.
 
     ``provider`` and ``model`` are both optional; when missing we fall
     back to whatever was last set on the conversation (or our defaults).
+    ``attachment_ids`` is a list of previously-uploaded Attachment ids
+    that should be folded into the user message as multimodal parts.
 
     Returns ``(user_message, assistant_message, conversation)``.
     """
@@ -284,6 +374,13 @@ def send_user_message(
     cleaned = _normalize_content(content)
     chosen_model = _normalize_model(model or convo.model)
 
+    # Validate attachments up-front. resolve_user_attachments raises
+    # AttachmentError for cross-user / wrong-conversation / already-sent,
+    # which the route layer translates to the right HTTP status.
+    attachments: list[Attachment] = resolve_user_attachments(
+        user, convo.id, attachment_ids or []
+    )
+
     history = list(convo.messages.order_by(Message.id.asc()).all())
 
     user_msg = Message(
@@ -303,11 +400,25 @@ def send_user_message(
     db.session.add(convo)
     db.session.commit()  # commit user message first so it persists even if the LLM call fails
 
+    # Stamp attachments onto the just-saved user message. If this fails
+    # we roll the transaction back but the message itself is kept —
+    # the attachments just stay detached for later retry/cleanup.
+    if attachments:
+        try:
+            attach_to_message(attachments, user_msg)
+        except Exception:
+            db.session.rollback()
+
     # Resolve attached pack lazily; if it was deleted out from under us
     # since the conversation was bound, we silently skip it.
     pack = convo.context_pack if convo.context_pack_id else None
 
-    payload = _build_message_payload(history, cleaned, context_pack=pack)
+    payload = _build_message_payload(
+        history,
+        cleaned,
+        context_pack=pack,
+        attachments=attachments,
+    )
 
     try:
         completion = chat_completion(
@@ -331,6 +442,10 @@ def send_user_message(
     convo.last_message_at = _utcnow()
     db.session.add(convo)
     db.session.commit()
+
+    # Refresh the user message so its `.attachments` relationship sees
+    # the stamped rows when callers serialize to JSON.
+    db.session.refresh(user_msg)
 
     return user_msg, assistant_msg, convo
 

@@ -38,9 +38,12 @@ export const chatApi = {
       .get(`/api/conversations/${conversationId}/messages`)
       .then((r) => r.data)
   },
-  sendMessage(conversationId, { content, model, provider }) {
+  sendMessage(conversationId, { content, model, provider, attachmentIds }) {
     const body = { content, model }
     if (provider) body.provider = provider
+    if (Array.isArray(attachmentIds) && attachmentIds.length) {
+      body.attachment_ids = attachmentIds
+    }
     return apiClient
       .post(`/api/conversations/${conversationId}/messages`, body)
       .then((r) => r.data)

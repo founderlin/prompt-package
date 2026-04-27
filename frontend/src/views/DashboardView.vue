@@ -50,139 +50,16 @@
       </article>
     </section>
 
-    <div class="dashboard__grid">
-      <section class="card">
-        <header class="card-header-row">
-          <h3 class="card__title card__title--sm">System status</h3>
-          <button
-            class="btn btn--ghost btn--sm"
-            type="button"
-            :disabled="state === 'loading'"
-            @click="loadHealth"
-          >
-            <span v-if="state === 'loading'" class="spinner" aria-hidden="true" />
-            <span>{{ state === 'loading' ? 'Refreshing' : 'Refresh' }}</span>
-          </button>
-        </header>
-
-        <div class="status-row">
-          <span class="status-row__label">Backend API</span>
-          <span v-if="state === 'loading'" class="chip">
-            <span class="spinner" aria-hidden="true" />
-            Checking…
-          </span>
-          <span v-else-if="state === 'ok'" class="chip chip--success">
-            <span class="dot dot--success" aria-hidden="true" />
-            Online
-          </span>
-          <span v-else class="chip chip--error">
-            <span class="dot dot--error" aria-hidden="true" />
-            Offline
-          </span>
-        </div>
-
-        <dl v-if="state === 'ok' && health" class="status-grid">
-          <div class="status-grid__cell">
-            <dt>Service</dt>
-            <dd>{{ health.service }}</dd>
-          </div>
-          <div class="status-grid__cell">
-            <dt>Version</dt>
-            <dd>{{ health.version }}</dd>
-          </div>
-          <div class="status-grid__cell">
-            <dt>Server time</dt>
-            <dd>{{ formattedTime }}</dd>
-          </div>
-        </dl>
-
-        <p v-else-if="state === 'error'" class="status-error">
-          {{ errorMessage }}
-        </p>
-
-        <code class="endpoint">GET {{ apiBaseUrl }}/api/health</code>
-      </section>
-
-      <section class="card">
-        <h3 class="card__title card__title--sm">Get started</h3>
-        <ol class="getting-started">
-          <li
-            class="getting-started__item"
-            :class="{ 'getting-started__item--done': hasApiKey }"
-          >
-            <span class="getting-started__step">1</span>
-            <div>
-              <p class="getting-started__title">Add an LLM provider key</p>
-              <p class="getting-started__hint">
-                <template v-if="hasApiKey">
-                  Connected: {{ providersSummary }}. Manage or rotate keys any time in
-                  <RouterLink to="/settings">Settings</RouterLink>.
-                </template>
-                <template v-else>
-                  Bring your own key from OpenRouter, DeepSeek, or OpenAI. We store it encrypted, never expose it to the browser.
-                  <RouterLink to="/settings">Add a key →</RouterLink>
-                </template>
-              </p>
-            </div>
-          </li>
-          <li
-            class="getting-started__item"
-            :class="{ 'getting-started__item--done': projectCount > 0 }"
-          >
-            <span class="getting-started__step">2</span>
-            <div>
-              <p class="getting-started__title">Create a project</p>
-              <p class="getting-started__hint">
-                <template v-if="projectCount > 0">
-                  {{ projectCount === 1 ? '1 project' : `${projectCount} projects` }}
-                  on file.
-                  <RouterLink to="/projects">Open Projects →</RouterLink>
-                </template>
-                <template v-else>
-                  Group related chats under a project so memories stay scoped.
-                  <RouterLink to="/projects">New project →</RouterLink>
-                </template>
-              </p>
-            </div>
-          </li>
-          <li
-            class="getting-started__item"
-            :class="{ 'getting-started__item--done': conversationTotal > 0 }"
-          >
-            <span class="getting-started__step">3</span>
-            <div>
-              <p class="getting-started__title">Start chatting</p>
-              <p class="getting-started__hint">
-                <template v-if="conversationTotal > 0">
-                  {{ conversationTotal === 1 ? '1 conversation' : `${conversationTotal} conversations` }}
-                  saved so far.
-                </template>
-                <template v-else>
-                  Pick a model, talk to it, and we'll save every turn for you.
-                </template>
-              </p>
-            </div>
-          </li>
-          <li
-            class="getting-started__item"
-            :class="{ 'getting-started__item--done': packTotal > 0 }"
-          >
-            <span class="getting-started__step">4</span>
-            <div>
-              <p class="getting-started__title">Wrap up &amp; generate a Context Pack</p>
-              <p class="getting-started__hint">
-                <template v-if="packTotal > 0">
-                  {{ packTotal === 1 ? '1 pack' : `${packTotal} packs` }} ready to paste into the next AI session.
-                </template>
-                <template v-else>
-                  After a chat, hit <strong>Wrap up</strong> to extract memories, then generate a Context Pack to bring it all into a fresh session.
-                </template>
-              </p>
-            </div>
-          </li>
-        </ol>
-      </section>
-    </div>
+    <section class="card usage-card">
+      <UsageChart
+        :summary="usageSummary"
+        :current="usageGranularity"
+        :loading="usageLoading"
+        :error="usageError"
+        @change="onGranularityChange"
+        @retry="loadUsage"
+      />
+    </section>
 
     <section class="card">
       <header class="card-header-row">
@@ -399,10 +276,11 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
-import { fetchHealth } from '@/api/health'
+import UsageChart from '@/components/dashboard/UsageChart.vue'
 import projectsApi from '@/api/projects'
 import chatApi from '@/api/chat'
 import contextPacksApi from '@/api/contextPacks'
+import usageApi from '@/api/usage'
 import { useAuth } from '@/stores/auth'
 import { describeApiError } from '@/utils/errors'
 import { relativeTime } from '@/utils/time'
@@ -423,82 +301,17 @@ const packTotal = ref(0)
 const packsLoading = ref(true)
 const packsError = ref('')
 
+const usageSummary = ref(null)
+const usageLoading = ref(true)
+const usageError = ref('')
+const usageGranularity = ref('day')
+
 const welcomeTitle = computed(() => {
   const email = auth.user.value?.email
   if (!email) return 'Welcome back'
   const handle = email.split('@')[0]
   return `Welcome back, ${handle}`
 })
-
-const providersConfigured = computed(() => {
-  const u = auth.user.value
-  if (u?.providers && typeof u.providers === 'object') return u.providers
-  return {
-    openrouter: !!u?.has_openrouter_api_key,
-    deepseek: false,
-    openai: false
-  }
-})
-
-const configuredProviders = computed(() =>
-  Object.entries(providersConfigured.value)
-    .filter(([, on]) => on)
-    .map(([id]) => id)
-)
-
-const hasApiKey = computed(() => configuredProviders.value.length > 0)
-
-const providersSummary = computed(() => {
-  const labels = {
-    openrouter: 'OpenRouter',
-    deepseek: 'DeepSeek',
-    openai: 'OpenAI'
-  }
-  return configuredProviders.value.map((id) => labels[id] || id).join(', ')
-})
-
-const state = ref('loading')
-const health = ref(null)
-const errorMessage = ref('')
-
-const apiBaseUrl = computed(
-  () => import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5001'
-)
-
-const formattedTime = computed(() => {
-  if (!health.value?.timestamp) return ''
-  try {
-    return new Date(health.value.timestamp).toLocaleString()
-  } catch (_e) {
-    return health.value.timestamp
-  }
-})
-
-async function loadHealth() {
-  state.value = 'loading'
-  errorMessage.value = ''
-  try {
-    const data = await fetchHealth()
-    health.value = data
-    state.value = data?.status === 'ok' ? 'ok' : 'error'
-    if (state.value === 'error') {
-      errorMessage.value = 'Backend responded but status is not ok.'
-    }
-  } catch (err) {
-    state.value = 'error'
-    errorMessage.value = describeError(err)
-  }
-}
-
-function describeError(err) {
-  if (err?.response) {
-    return `Backend returned ${err.response.status} ${err.response.statusText || ''}`.trim()
-  }
-  if (err?.request) {
-    return 'Could not reach the backend. Is Flask running on the configured port?'
-  }
-  return err?.message || 'Unknown error talking to the backend.'
-}
 
 async function loadProjectCount() {
   projectsLoading.value = true
@@ -551,11 +364,30 @@ async function loadRecentPacks() {
   }
 }
 
+async function loadUsage() {
+  usageLoading.value = true
+  usageError.value = ''
+  try {
+    const data = await usageApi.summary({ granularity: usageGranularity.value })
+    usageSummary.value = data
+  } catch (err) {
+    usageError.value = describeApiError(err, 'Could not load usage data.')
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+function onGranularityChange(next) {
+  if (!next || next === usageGranularity.value) return
+  usageGranularity.value = next
+  loadUsage()
+}
+
 onMounted(() => {
-  loadHealth()
   loadProjectCount()
   loadRecentConversations()
   loadRecentPacks()
+  loadUsage()
 })
 </script>
 
@@ -603,16 +435,8 @@ onMounted(() => {
   color: var(--color-text-secondary);
 }
 
-.dashboard__grid {
-  display: grid;
-  grid-template-columns: 1.1fr 1fr;
-  gap: var(--space-4);
-}
-
-@media (max-width: 880px) {
-  .dashboard__grid {
-    grid-template-columns: 1fr;
-  }
+.usage-card {
+  padding: var(--space-5);
 }
 
 .card-header-row {
@@ -625,7 +449,7 @@ onMounted(() => {
 .status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   background: var(--color-surface-muted);
   border: 1px solid var(--color-border);
@@ -636,119 +460,6 @@ onMounted(() => {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
   font-weight: 500;
-}
-
-.status-grid {
-  margin: var(--space-4) 0 var(--space-3);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: var(--space-3);
-}
-
-.status-grid__cell {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3);
-}
-
-.status-grid__cell dt {
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--color-text-muted);
-}
-
-.status-grid__cell dd {
-  margin: 0;
-  font-size: var(--text-base);
-  word-break: break-all;
-}
-
-.status-error {
-  margin: var(--space-3) 0;
-  font-size: var(--text-sm);
-  color: var(--color-error);
-}
-
-.endpoint {
-  display: inline-block;
-  margin-top: var(--space-3);
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  background: var(--color-surface-muted);
-  border: 1px solid var(--color-border);
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.dot--success {
-  background: var(--color-success);
-}
-
-.dot--error {
-  background: var(--color-error);
-}
-
-.getting-started {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.getting-started__item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
-  border: 1px solid var(--color-border);
-}
-
-.getting-started__step {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border-strong);
-  color: var(--color-text-secondary);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.getting-started__item--done .getting-started__step {
-  background: var(--color-success);
-  border-color: var(--color-success);
-  color: #fff;
-}
-
-.getting-started__title {
-  margin: 0 0 2px;
-  font-size: var(--text-base);
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.getting-started__hint {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
 }
 
 .banner {
