@@ -1,5 +1,8 @@
 # Prompt Package
 
+<img width="748" height="221" alt="icon2" src="https://github.com/user-attachments/assets/764edff7-1d60-4da2-b6e2-4c04c400ba0f" />
+
+
 > 面向 OpenRouter / DeepSeek / OpenAI 个人用户的 AI 项目记忆工具。
 >
 > 在项目内挂上你想用的 provider key，选模型聊天 → 自动保存 blabla → 摘要 → 搜索 → 生成 Context Pack，把过去的 AI 对话变成可复用的项目记忆，并能作为 Prompt+ 注入下一次新 blabla。
