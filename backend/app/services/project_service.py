@@ -13,6 +13,9 @@ from sqlalchemy import select
 
 from app.extensions import db
 from app.models import Project, User
+from app.models.context_pack import ContextPack
+from app.models.conversation import Conversation
+from app.models.memory import Memory
 
 NAME_MIN = 1
 NAME_MAX = 120
@@ -114,6 +117,27 @@ def update_for_user(
 
 def delete_for_user(user: User, project_id: int) -> None:
     project = get_for_user(user, project_id)
+
+    # Explicitly clean up child records before deleting the project itself.
+    # SQLite doesn't enforce ON DELETE CASCADE by default (requires
+    # `PRAGMA foreign_keys=ON`), and SQLAlchemy's ORM-side default cascade
+    # for these backrefs would try to NULL out foreign key columns that
+    # are declared NOT NULL (e.g. context_packs.project_id), raising an
+    # IntegrityError. Deleting children first keeps the unit of work
+    # simple, DB-agnostic, and correct.
+    #
+    # Order matters: memories reference conversations, and conversations
+    # reference context_packs via a nullable context_pack_id (SET NULL on
+    # delete). Delete memories first, then context_packs, then
+    # conversations (Message rows are cleaned up via the Conversation
+    # ORM cascade="all, delete-orphan"), then the project itself.
+    Memory.query.filter_by(project_id=project.id).delete(synchronize_session=False)
+    ContextPack.query.filter_by(project_id=project.id).delete(
+        synchronize_session=False
+    )
+    for convo in Conversation.query.filter_by(project_id=project.id).all():
+        db.session.delete(convo)
+
     db.session.delete(project)
     db.session.commit()
 

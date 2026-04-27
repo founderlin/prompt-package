@@ -76,15 +76,20 @@ defineExpose({
       @keydown="handleKeydown"
     />
     <div class="composer__actions">
-      <span class="composer__hint">Enter to send · Shift+Enter for newline</span>
-      <button
-        type="submit"
-        class="btn btn--primary composer__submit"
-        :disabled="!canSend"
-      >
-        <span v-if="pending" class="spinner" aria-hidden="true" />
-        <span>{{ pending ? 'Sending…' : 'Send' }}</span>
-      </button>
+      <div class="composer__actions-left">
+        <slot name="leading" />
+      </div>
+      <div class="composer__actions-right">
+        <span class="composer__hint">Enter to send · Shift+Enter for newline</span>
+        <button
+          type="submit"
+          class="btn btn--primary composer__submit"
+          :disabled="!canSend"
+        >
+          <span v-if="pending" class="spinner" aria-hidden="true" />
+          <span>{{ pending ? 'Sending…' : 'Send' }}</span>
+        </button>
+      </div>
     </div>
   </form>
 </template>
@@ -131,6 +136,22 @@ defineExpose({
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.composer__actions-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.composer__actions-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
 }
 
 .composer__hint {

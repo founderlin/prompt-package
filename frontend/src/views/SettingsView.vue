@@ -54,6 +54,41 @@
     </section>
 
     <section class="card">
+      <h3 class="card__title card__title--sm">Available models</h3>
+      <p class="text-secondary" style="margin: 0 0 var(--space-3)">
+        Pick the models you want to see in the chat's model picker. Each
+        provider is independent — you can enable several from OpenRouter,
+        DeepSeek, and OpenAI at the same time.
+      </p>
+
+      <div v-if="loadingProviders || loadingModels" class="provider-cards__loading">
+        <span class="spinner" aria-hidden="true" />
+        <span class="text-secondary">Loading model settings…</span>
+      </div>
+
+      <div
+        v-else-if="!configuredProviders.length"
+        class="banner banner--empty"
+      >
+        <strong>No provider keys yet.</strong>
+        <span>
+          Add at least one API key above — then come back to curate which
+          models show up in the chat picker.
+        </span>
+      </div>
+
+      <div v-else class="provider-cards">
+        <ProviderModelSelections
+          v-for="cfg in configuredProviders"
+          :key="cfg.id"
+          :provider="cfg"
+          :selections="modelsByProvider[cfg.id] || []"
+          @change="onModelsChanged"
+        />
+      </div>
+    </section>
+
+    <section class="card">
       <h3 class="card__title card__title--sm">Danger zone</h3>
       <p class="text-secondary" style="margin: 0 0 var(--space-3)">
         Full data deletion controls will live here.
@@ -68,7 +103,9 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ProviderKeyCard from '@/components/settings/ProviderKeyCard.vue'
+import ProviderModelSelections from '@/components/settings/ProviderModelSelections.vue'
 import providersApi from '@/api/providers'
+import modelSelectionsApi from '@/api/modelSelections'
 import { useAuth } from '@/stores/auth'
 import { describeApiError } from '@/utils/errors'
 import { formatDateTime } from '@/utils/time'
@@ -88,6 +125,13 @@ const statuses = ref({})
 const loadingProviders = ref(true)
 const loadError = ref(null)
 
+const modelsByProvider = ref({})
+const loadingModels = ref(true)
+
+const configuredProviders = computed(() =>
+  providers.value.filter((p) => statuses.value[p.id]?.configured)
+)
+
 async function loadProviders() {
   loadingProviders.value = true
   loadError.value = null
@@ -105,6 +149,19 @@ async function loadProviders() {
   }
 }
 
+async function loadModelSelections() {
+  loadingModels.value = true
+  try {
+    const data = await modelSelectionsApi.list()
+    modelsByProvider.value = data?.by_provider || {}
+  } catch (_err) {
+    // Non-fatal — user can still add keys; section will just appear empty.
+    modelsByProvider.value = {}
+  } finally {
+    loadingModels.value = false
+  }
+}
+
 function onProviderSaved({ provider, status }) {
   if (status) statuses.value = { ...statuses.value, [provider]: status }
   auth.refresh().catch(() => {})
@@ -113,6 +170,12 @@ function onProviderSaved({ provider, status }) {
 function onProviderRemoved({ provider, status }) {
   if (status) statuses.value = { ...statuses.value, [provider]: status }
   auth.refresh().catch(() => {})
+}
+
+function onModelsChanged() {
+  // Simplest correct thing: reload the selection map from the server.
+  // These endpoints are cheap (small rows); no need to hand-merge.
+  loadModelSelections()
 }
 
 async function onLogout() {
@@ -125,7 +188,9 @@ async function onLogout() {
   }
 }
 
-onMounted(loadProviders)
+onMounted(async () => {
+  await Promise.all([loadProviders(), loadModelSelections()])
+})
 </script>
 
 <style scoped>
@@ -195,6 +260,27 @@ onMounted(loadProviders)
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3) 0;
+}
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+  align-items: center;
+}
+
+.banner strong {
+  font-weight: 600;
+}
+
+.banner--empty {
+  background: var(--color-surface-muted);
+  border-style: dashed;
+  color: var(--color-text-secondary);
 }
 
 @media (max-width: 560px) {

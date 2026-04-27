@@ -3,9 +3,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import MessageList from '@/components/chat/MessageList.vue'
+import ModelPicker from '@/components/chat/ModelPicker.vue'
 import chatApi from '@/api/chat'
 import contextPacksApi from '@/api/contextPacks'
 import memoriesApi from '@/api/memories'
+import modelSelectionsApi from '@/api/modelSelections'
 import projectsApi from '@/api/projects'
 import { useAuth } from '@/stores/auth'
 import { describeApiError } from '@/utils/errors'
@@ -13,14 +15,10 @@ import { relativeTime } from '@/utils/time'
 import {
   DEFAULT_MODEL_ID,
   DEFAULT_PROVIDER,
-  PROVIDERS,
   findModelOption,
-  groupedModelOptions,
   modelLabel,
   providerLabel
 } from '@/constants/models'
-
-const GROUPED_MODELS = groupedModelOptions()
 
 const MEMORY_KIND_LABELS = {
   fact: 'Fact',
@@ -74,9 +72,11 @@ const detachingPack = ref(false)
 const highlightId = ref(null)
 let highlightTimer = null
 
-const customModelMode = ref(false)
-const customModelId = ref('')
-const customProvider = ref(DEFAULT_PROVIDER)
+// User's curated list of models (per provider) — loaded from /api/settings/models.
+// Shape: [{ provider, model_id, label }, ...]
+const userModels = ref([])
+const userModelsLoaded = ref(false)
+
 const selectedModel = ref(DEFAULT_MODEL_ID)
 const selectedProvider = ref(DEFAULT_PROVIDER)
 
@@ -131,6 +131,12 @@ async function bootstrap() {
   memoriesList.value = []
   memoriesOpen.value = false
 
+  // Ensure we have the user's curated model list up-front; the picker
+  // and the "what model should we use by default" logic both depend on it.
+  if (!userModelsLoaded.value) {
+    await loadUserModels()
+  }
+
   try {
     const projectData = await projectsApi.get(projectIdNum.value)
     project.value = projectData?.project || null
@@ -150,6 +156,15 @@ async function bootstrap() {
 
   // Sidebar conversations are loaded in parallel with the active conversation.
   loadConversations()
+
+  // If we're about to open a *new* conversation (no cid in the URL),
+  // pre-seed the picker with the user's first enabled model so the very
+  // first turn doesn't silently go to the hard-coded gpt-4o-mini default.
+  if (!conversationIdNum.value) {
+    const fallback = pickDefaultSelection()
+    selectedModel.value = fallback.model_id
+    selectedProvider.value = fallback.provider
+  }
 
   try {
     if (conversationIdNum.value) {
@@ -241,64 +256,68 @@ async function loadConversations() {
 }
 
 function applyConversationModel(modelId, providerId) {
-  // Honor the conversation's recorded provider if it has one; otherwise
-  // try to infer from the model id (lookup in our curated catalogue).
-  const found = findModelOption(modelId, providerId)
-  if (found) {
-    selectedProvider.value = found.provider
-    selectedModel.value = found.id
-    customModelMode.value = false
-    customModelId.value = ''
-    customProvider.value = found.provider
+  // Prefer what the conversation itself recorded. If neither is known,
+  // fall back to the user's first enabled model (or the built-in default).
+  if (modelId) {
+    selectedModel.value = modelId
+    selectedProvider.value = providerId || inferProvider(modelId)
     return
   }
-  if (!modelId && !providerId) {
-    return
-  }
-  customModelMode.value = true
-  customProvider.value = providerId || DEFAULT_PROVIDER
-  customModelId.value = modelId || ''
-  selectedProvider.value = customProvider.value
-  selectedModel.value = customModelId.value
+  const fallback = pickDefaultSelection()
+  selectedModel.value = fallback.model_id
+  selectedProvider.value = fallback.provider
 }
 
-function onModelDropdownChange(event) {
-  const value = event.target.value
-  if (value === '__custom__') {
-    customModelMode.value = true
-    if (!customProvider.value) customProvider.value = selectedProvider.value
-    customModelId.value =
-      customModelId.value || conversation.value?.model || ''
-    selectedProvider.value = customProvider.value
-    selectedModel.value = customModelId.value.trim()
-    return
+function inferProvider(modelId) {
+  // 1) Exact match in user's curated list wins.
+  const inUser = userModels.value.find((m) => m.model_id === modelId)
+  if (inUser) return inUser.provider
+  // 2) Try the curated catalogue.
+  const preset = findModelOption(modelId)
+  if (preset?.provider) return preset.provider
+  return DEFAULT_PROVIDER
+}
+
+function pickDefaultSelection() {
+  // Prefer a user-configured model whose provider has a working key.
+  const enabledProviders = providersConfigured.value
+  const configuredPick = userModels.value.find(
+    (m) => enabledProviders[m.provider]
+  )
+  if (configuredPick) {
+    return {
+      provider: configuredPick.provider,
+      model_id: configuredPick.model_id
+    }
   }
-  const sep = value.indexOf('::')
-  if (sep === -1) {
-    selectedModel.value = value
-    return
+  // Otherwise, any user-configured model, even if key is missing (UI
+  // will nag to add the key).
+  if (userModels.value.length) {
+    return {
+      provider: userModels.value[0].provider,
+      model_id: userModels.value[0].model_id
+    }
   }
-  const provider = value.slice(0, sep)
-  const modelId = value.slice(sep + 2)
-  customModelMode.value = false
+  // Last resort: built-in default so chat never 500s on a fresh install.
+  return { provider: DEFAULT_PROVIDER, model_id: DEFAULT_MODEL_ID }
+}
+
+async function loadUserModels() {
+  try {
+    const data = await modelSelectionsApi.list()
+    const rows = Array.isArray(data?.models) ? data.models : []
+    userModels.value = rows
+  } catch (_err) {
+    userModels.value = []
+  } finally {
+    userModelsLoaded.value = true
+  }
+}
+
+function onModelPicked({ provider, modelId }) {
   selectedProvider.value = provider
   selectedModel.value = modelId
 }
-
-function onCustomModelInput(event) {
-  customModelId.value = event.target.value
-  selectedModel.value = event.target.value.trim()
-}
-
-function onCustomProviderChange(event) {
-  customProvider.value = event.target.value
-  selectedProvider.value = event.target.value
-}
-
-const dropdownValue = computed(() => {
-  if (customModelMode.value) return '__custom__'
-  return `${selectedProvider.value}::${selectedModel.value}`
-})
 
 async function handleSubmit(content) {
   if (!conversation.value) return
@@ -799,56 +818,6 @@ onBeforeUnmount(() => {
                 <span class="visually-hidden">Remove pack</span>
               </button>
             </div>
-            <label class="chat-model-picker">
-              <span class="chat-model-picker__label">Model</span>
-              <select
-                class="chat-model-picker__select"
-                :value="dropdownValue"
-                :disabled="sending"
-                @change="onModelDropdownChange"
-              >
-                <optgroup
-                  v-for="grp in GROUPED_MODELS"
-                  :key="grp.provider"
-                  :label="grp.label"
-                >
-                  <option
-                    v-for="opt in grp.options"
-                    :key="`${grp.provider}::${opt.id}`"
-                    :value="`${grp.provider}::${opt.id}`"
-                  >
-                    {{ opt.label }}
-                    <template v-if="!providersConfigured[grp.provider]"> · key needed</template>
-                  </option>
-                </optgroup>
-                <option value="__custom__">Custom…</option>
-              </select>
-            </label>
-            <select
-              v-if="customModelMode"
-              class="chat-model-picker__select"
-              :value="customProvider"
-              :disabled="sending"
-              @change="onCustomProviderChange"
-              aria-label="Custom model provider"
-            >
-              <option
-                v-for="cfg in PROVIDERS"
-                :key="cfg.id"
-                :value="cfg.id"
-              >
-                via {{ cfg.label }}
-              </option>
-            </select>
-            <input
-              v-if="customModelMode"
-              type="text"
-              class="chat-model-picker__custom"
-              placeholder="model-id"
-              :value="customModelId"
-              :disabled="sending"
-              @input="onCustomModelInput"
-            />
             <button
               class="btn btn--ghost btn--sm"
               type="button"
@@ -998,7 +967,17 @@ onBeforeUnmount(() => {
           :disabled="composerDisabled"
           :placeholder="composerPlaceholder"
           @submit="handleSubmit"
-        />
+        >
+          <template #leading>
+            <ModelPicker
+              :models="userModels"
+              :current-model="selectedModel"
+              :current-provider="selectedProvider"
+              :disabled="sending"
+              @select="onModelPicked"
+            />
+          </template>
+        </ChatComposer>
       </section>
     </div>
 
@@ -1521,39 +1500,6 @@ onBeforeUnmount(() => {
   gap: var(--space-2);
 }
 
-.chat-model-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-}
-
-.chat-model-picker__label {
-  font-weight: 500;
-}
-
-.chat-model-picker__select,
-.chat-model-picker__custom {
-  font: inherit;
-  padding: 6px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-}
-
-.chat-model-picker__custom {
-  min-width: 220px;
-}
-
-.chat-model-picker__select:focus,
-.chat-model-picker__custom:focus {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-soft);
-}
-
 @media (max-width: 960px) {
   .chat-layout {
     grid-template-columns: 1fr;
@@ -1571,9 +1517,6 @@ onBeforeUnmount(() => {
   }
   .chat-header__controls {
     width: 100%;
-  }
-  .chat-model-picker__custom {
-    flex: 1;
   }
 }
 

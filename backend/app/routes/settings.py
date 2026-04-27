@@ -30,6 +30,14 @@ from app.services.credentials_service import (
     status_for,
     test_key,
 )
+from app.services.model_selection_service import (
+    ModelSelectionError,
+    add_for_user as add_model_for_user,
+    grouped_for_user as grouped_models_for_user,
+    list_for_user as list_models_for_user,
+    remove_for_user as remove_model_for_user,
+    replace_for_provider as replace_models_for_provider,
+)
 from app.services.settings_service import (
     SettingsError,
     delete_openrouter_key,
@@ -46,7 +54,7 @@ def _payload() -> dict:
     return request.get_json(silent=True) or {}
 
 
-def _error(err: SettingsError | CredentialsError):
+def _error(err: SettingsError | CredentialsError | ModelSelectionError):
     return jsonify({"error": err.code, "message": err.message}), err.status
 
 
@@ -175,3 +183,91 @@ def test():
         return _error(err)
 
     return jsonify({"ok": True, "key_info": info.to_dict()})
+
+
+# ---------- Model selection routes ---------------------------------------------
+#
+# Per-user curated list of which models show up in the chat model picker.
+# Stored per provider so the UI can toggle them with provider grouping.
+
+
+@settings_bp.get("/models")
+@login_required
+def list_model_selections():
+    user = get_current_user()
+    grouped = grouped_models_for_user(user)
+    flat = list_models_for_user(user)
+    return jsonify(
+        {
+            "models": [row.to_dict() for row in flat],
+            "by_provider": {
+                provider: [row.to_dict() for row in rows]
+                for provider, rows in grouped.items()
+            },
+        }
+    )
+
+
+@settings_bp.put("/models/<provider>")
+@login_required
+def replace_model_selections(provider: str):
+    user = get_current_user()
+    data = _payload()
+    models = data.get("models")
+    if models is None:
+        # Tolerate `{"model_ids": [...]}` as a simple shorthand.
+        raw_ids = data.get("model_ids")
+        if isinstance(raw_ids, list):
+            models = raw_ids
+    if models is None or not isinstance(models, list):
+        return (
+            jsonify(
+                {
+                    "error": "validation_error",
+                    "message": (
+                        "Request body must include a `models` list (of "
+                        "strings or objects with `model_id`)."
+                    ),
+                }
+            ),
+            400,
+        )
+
+    try:
+        rows = replace_models_for_provider(user, provider=provider, models=models)
+    except ModelSelectionError as err:
+        return _error(err)
+    return jsonify(
+        {
+            "provider": provider,
+            "models": [row.to_dict() for row in rows],
+        }
+    )
+
+
+@settings_bp.post("/models/<provider>")
+@login_required
+def add_model_selection(provider: str):
+    user = get_current_user()
+    data = _payload()
+    try:
+        row = add_model_for_user(
+            user,
+            provider=provider,
+            model_id=data.get("model_id"),
+            label=data.get("label"),
+        )
+    except ModelSelectionError as err:
+        return _error(err)
+    return jsonify({"model": row.to_dict()}), 201
+
+
+@settings_bp.delete("/models/<provider>/<path:model_id>")
+@login_required
+def delete_model_selection(provider: str, model_id: str):
+    user = get_current_user()
+    try:
+        remove_model_for_user(user, provider=provider, model_id=model_id)
+    except ModelSelectionError as err:
+        return _error(err)
+    return jsonify({"status": "ok"})

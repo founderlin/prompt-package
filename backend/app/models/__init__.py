@@ -6,6 +6,7 @@ from .memory import KINDS as MEMORY_KINDS, Memory
 from .project import Project
 from .provider_credential import ProviderCredential
 from .user import User
+from .user_model_selection import UserModelSelection
 
 __all__ = [
     "ContextPack",
@@ -16,4 +17,5 @@ __all__ = [
     "Project",
     "ProviderCredential",
     "User",
+    "UserModelSelection",
 ]
