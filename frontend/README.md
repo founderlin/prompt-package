@@ -1,4 +1,4 @@
-# imrockey frontend
+# Prompt Package frontend
 
 Vue 3 + Vite 前端，通过 REST API 调用 Flask 后端。
 

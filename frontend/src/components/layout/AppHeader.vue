@@ -77,7 +77,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuth()
 
-const title = computed(() => route.meta?.title || 'IMROCKEY')
+const title = computed(() => route.meta?.title || 'Prompt Package')
 const subtitle = computed(() => route.meta?.subtitle || '')
 
 const menuOpen = ref(false)

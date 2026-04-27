@@ -1,15 +1,15 @@
-# imrockey
+# Prompt Package
 
 > 面向 OpenRouter / DeepSeek / OpenAI 个人用户的 AI 项目记忆工具。
 >
-> 在项目内挂上你想用的 provider key，选模型聊天 → 自动保存对话 → 摘要 → 搜索 → 生成 Context Pack，把过去的 AI 对话变成可复用的项目记忆，并能作为 Prompt+ 注入下一次新对话。
+> 在项目内挂上你想用的 provider key，选模型聊天 → 自动保存 blabla → 摘要 → 搜索 → 生成 Context Pack，把过去的 AI 对话变成可复用的项目记忆，并能作为 Prompt+ 注入下一次新 blabla。
 
 ---
 
 ## 项目结构
 
 ```
-imrocky/
+prompt-package/
 ├── backend/        # Flask 后端，提供 REST API
 ├── frontend/       # Vue.js 前端，调用后端 API
 ├── README.md       # 你正在看的这份

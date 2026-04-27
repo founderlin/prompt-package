@@ -2,7 +2,7 @@
   <div class="privacy-view">
     <PageHeader
       title="Privacy"
-      description="A short summary of how IMROCKEY handles your data while we are still in MVP."
+      description="A short summary of how Prompt Package handles your data while we are still in MVP."
     />
 
     <section class="card">

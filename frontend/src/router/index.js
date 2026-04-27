@@ -110,7 +110,7 @@ router.beforeEach(async (to) => {
   return true
 })
 
-const APP_NAME = 'IMROCKEY'
+const APP_NAME = 'Prompt Package'
 
 router.afterEach((to) => {
   const pageTitle = to.meta?.title

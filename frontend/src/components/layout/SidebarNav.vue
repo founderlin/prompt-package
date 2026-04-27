@@ -1,8 +1,8 @@
 <template>
   <aside class="sidebar">
     <div class="sidebar__brand">
-      <img class="brand-logo" :src="logoSrc" alt="IMROCKEY logo" />
-      <span class="brand-name">IMROCKEY</span>
+      <img class="brand-logo" :src="logoSrc" alt="Prompt Package logo" />
+      <span class="brand-name">Prompt Package</span>
     </div>
 
     <nav class="sidebar__nav" aria-label="Primary">

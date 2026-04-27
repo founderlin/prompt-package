@@ -2,8 +2,8 @@
   <div class="auth-layout">
     <header class="auth-layout__brand">
       <RouterLink to="/" class="brand">
-        <img class="brand-logo" :src="logoSrc" alt="IMROCKEY logo" />
-        <span class="brand-name">IMROCKEY</span>
+        <img class="brand-logo" :src="logoSrc" alt="Prompt Package logo" />
+        <span class="brand-name">Prompt Package</span>
       </RouterLink>
     </header>
 
@@ -12,7 +12,7 @@
     </main>
 
     <footer class="auth-layout__footer">
-      <span>IMROCKEY · MVP v0.1.0</span>
+      <span>Prompt Package · MVP v0.1.0</span>
       <span>·</span>
       <RouterLink to="/privacy">Privacy</RouterLink>
     </footer>
