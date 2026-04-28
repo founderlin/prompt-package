@@ -44,3 +44,6 @@ Thumbs.db
 # ---------- Project-specific ----------
 backend/instance/
 backend/.flaskenv
+
+# Image backups created by scripts/transparentize_logos.py and pad_icon1_square.py
+*.bak
