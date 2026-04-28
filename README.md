@@ -162,10 +162,17 @@ curl https://api.your-domain.example.com/api/health
 | Secret | 说明 |
 | --- | --- |
 | `SSH_HOST` | ECS 公网地址 |
-| `SSH_USER` | 登录用户 |
-| `SSH_KEY_B64`（推荐）/ `SSH_KEY` | SSH 私钥，前者为 base64 单行编码 |
+| `SSH_USER` | 登录用户。**该用户必须满足**:(a) 对项目目录有写权限,能直接 `git pull`;(b) 能不经 `sudo -i` / `su` 切换账号就跑 `npm run build`(切换账号会导致 `VITE_*` 环境变量丢失)。当前生产使用 `admin`,项目目录 `/home/admin/prompt-package`,`~/deploy.sh` 即 `/home/admin/deploy.sh` |
+| `SSH_KEY_B64`（推荐）/ `SSH_KEY` | SSH 私钥，前者为 base64 单行编码。切换 `SSH_USER` 时记得同步更新,并确保新用户已在 `~/.ssh/authorized_keys` 里信任这把公钥 |
 | `VITE_API_BASE_URL` | 前端构建时写入 bundle 的后端 API 地址，例如 `https://api.your-domain.example.com` |
 | `VITE_GOOGLE_CLIENT_ID` | 前端构建时写入 bundle 的 Google OAuth Web Client ID；**留空则 Login / Register 页不会出现 Google 一键登录按钮** |
 
 > 踩坑记录：`VITE_*` 变量只在 `vite build` 执行那一刻被内联到产物里，服务器重启 Flask 不会重新读取；因此这两个值必须**在 `npm run build` 之前**出现在 shell env 中。workflow 已经用 `appleboy/ssh-action` 的 `envs:` 把它们转发到远端 shell 会话，`deploy.sh` 只要在调用 `npm run build` 之前照常继承环境即可（脚本本身不需要再 `source` 任何 env 文件）。如果 `deploy.sh` 自己用了 `env -i` 或 `sudo` 清洗环境，请务必把这两个名字加入白名单，否则生产 bundle 里会是空串，Google 按钮又会消失。
+
+> 切换 `SSH_USER` 的 checklist（例如从 `deploy` 换成 `admin`）：
+> 1. 新用户的 `~/.ssh/authorized_keys` 包含 `SSH_KEY_B64` 对应的公钥；
+> 2. 新用户对项目目录（本例 `/home/admin/prompt-package`）有写权限，`git pull` 不报 `Permission denied`；
+> 3. `~/deploy.sh` 以新用户身份存在且可执行（`chmod +x`）；
+> 4. `npm` / `node` 在新用户的登录 `PATH` 里能被找到——常见坑是 nvm 只在交互式 shell 中注入 PATH，非交互 SSH 登录会拿不到。建议在 `deploy.sh` 头部显式 `export PATH="$HOME/.nvm/versions/node/<ver>/bin:$PATH"` 或 `source ~/.nvm/nvm.sh`；
+> 5. 如果后端服务通过 `systemctl` 重启，并且新用户不是 systemd unit 的 owner，需要 `NOPASSWD` sudo 白名单（例：`admin ALL=(root) NOPASSWD: /bin/systemctl restart promptpackage`）。
 
