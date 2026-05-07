@@ -73,6 +73,16 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
 
 # tini as PID 1 → clean signal handling, no zombie processes.
 # gunicorn args:
+#   --factory                : tell gunicorn that the target is a
+#                              callable returning the WSGI app, not
+#                              a bare ``app`` attribute. We use this
+#                              because the repo ships both ``app/``
+#                              (Python package, has ``create_app``) and
+#                              ``app.py`` (script, has a bare ``app``);
+#                              Python's import system prefers the
+#                              package, so ``app:app`` can't find the
+#                              attribute. Factory mode sidesteps the
+#                              conflict entirely.
 #   -w 4                     : 4 worker processes (SQLite writes serialize,
 #                              but reads benefit from parallelism).
 #   --timeout 120            : chat_completion can take ~60s on big prompts.
@@ -80,10 +90,11 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
 #   --graceful-timeout 30    : give in-flight LLM calls time to finish.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["gunicorn", \
+     "--factory", \
      "-w", "4", \
      "-b", "0.0.0.0:5001", \
      "--timeout", "120", \
      "--graceful-timeout", "30", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
-     "app:app"]
+     "app:create_app"]
