@@ -34,6 +34,62 @@
 2. **Frontend**: `cd frontend && npm install && npm run dev`
 3. **Setup**: Add your API keys in the Settings page.
 
+### Docker Deployment (Recommended)
+
+One-command deployment via Docker Compose. Both the Flask backend
+(gunicorn, 4 workers) and the Vue frontend (nginx with `/api` reverse
+proxy) run as separate containers on a private network.
+
+```bash
+# 1) Generate the environment file and fill in real secrets
+cp .env.docker.example .env
+# Edit .env → SECRET_KEY / JWT_SECRET_KEY / ENCRYPTION_KEY
+
+# 2) Build and start
+docker compose up -d --build
+
+# 3) Open
+# http://<host>:8080 — change HOST_PORT in .env if 8080 is taken
+```
+
+Key features of the Docker setup:
+
+- **Persistent data**: the SQLite DB and uploaded attachments live on
+  a named volume (`prompt-package-data`), so container rebuilds don't
+  lose your projects.
+- **Same-origin by default**: the frontend nginx proxies `/api/*` to
+  the backend container, so CORS and `VITE_API_BASE_URL` can both
+  stay empty in the default topology.
+- **Health checks** on both services drive `depends_on` — the frontend
+  starts accepting traffic only after the backend reports healthy.
+- **Non-root** backend user, `tini` as PID 1 for clean signal handling.
+
+For production:
+
+```bash
+# Generate strong secrets once, store in .env, never commit them
+python -c "import secrets; print(secrets.token_urlsafe(48))"        # SECRET_KEY
+python -c "import secrets; print(secrets.token_urlsafe(48))"        # JWT_SECRET_KEY
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # ENCRYPTION_KEY
+
+# Flip to production mode (will refuse to boot with dev defaults)
+echo 'FLASK_ENV=production' >> .env
+
+docker compose up -d --build
+```
+
+Upgrading on the Alibaba Cloud box (or any server) later:
+
+```bash
+git pull origin main
+docker compose up -d --build          # rebuilds only what changed
+docker compose logs -f backend        # tail logs to confirm healthy boot
+```
+
+Want Postgres instead of the bundled SQLite? Add a `db` service to
+`docker-compose.yml` and set `DATABASE_URL=postgresql://...` in `.env`
+— the backend picks it up on next restart.
+
 ---
 
 <a name="简体中文"></a>

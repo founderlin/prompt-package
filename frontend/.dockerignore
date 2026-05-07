@@ -1,0 +1,25 @@
+# Frontend-specific build context ignores.
+# Stacks on top of the repo-root .dockerignore.
+
+# Node dependencies — reinstalled inside the builder stage.
+node_modules/
+
+# Vite build output — regenerated inside the builder stage.
+dist/
+dist-ssr/
+
+# Dev-server caches
+.vite/
+.cache/
+
+# Dev + hot-reload state
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# Env files — VITE_* values come in as --build-arg at build time.
+.env
+.env.*
+!.env.example

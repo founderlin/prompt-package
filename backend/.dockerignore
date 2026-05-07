@@ -1,0 +1,34 @@
+# Backend-specific build context ignores. These stack on top of the
+# repo-root .dockerignore. The goal: ship only the app source + its
+# runtime needs, nothing else.
+
+# Python virtual envs — never bake the host-side venv into the image
+.venv/
+venv/
+env/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Tests & dev-only scripts (kept in-repo for humans; not needed inside
+# the image). Uncomment if you later add a test stage.
+scripts/
+**/tests/
+*_test.py
+test_*.py
+
+# Local state. The live SQLite file + uploaded attachments are mounted
+# as a named volume at runtime — we do NOT want the host's instance/
+# contents baked into the image (stale DB, PII-laden uploads, etc.).
+instance/
+
+# Dev logs
+*.log
+backend.log
+
+# Env files — secrets live in real ENV at runtime via docker-compose.
+.env
+.env.*
+!.env.example

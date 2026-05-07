@@ -1,0 +1,121 @@
+# Prompt Package — docker-compose orchestration.
+#
+# Two services:
+#   - backend  : Flask + gunicorn on port 5001 (internal only).
+#   - frontend : nginx serving the Vite build on host port ${HOST_PORT:-8080},
+#                reverse-proxying /api/* to the backend.
+#
+# Data lives in the ``prompt-package-data`` named volume, mounted at
+# /app/instance inside the backend container. That's where SQLite writes
+# ``promptpackage.sqlite3`` plus any uploaded attachments. Kill the
+# containers and recreate them — the volume keeps your data.
+#
+# Usage
+# -----
+#   cp .env.docker.example .env
+#   # edit .env → set SECRET_KEY / JWT_SECRET_KEY / ENCRYPTION_KEY
+#   docker compose up -d --build
+#   # visit http://<host>:8080
+#
+# Production notes
+# ----------------
+# - Flip FLASK_ENV to "production" in .env only after setting all three
+#   secret env vars. The backend's ProductionConfig refuses to boot if
+#   any is still the dev default.
+# - Want Postgres instead of SQLite? Add a `db` service, set
+#   DATABASE_URL=postgresql://... in .env, and point depends_on at it.
+# - Want a real TLS terminator (Let's Encrypt etc.)? Keep this file
+#   as-is and put Caddy / Traefik / another nginx in front of the
+#   frontend container on port 80/443.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: promptpackage-backend:latest
+    container_name: promptpackage-backend
+    restart: unless-stopped
+    environment:
+      # ---- Flask runtime ----
+      FLASK_ENV: ${FLASK_ENV:-development}
+      FLASK_HOST: 0.0.0.0
+      FLASK_PORT: "5001"
+
+      # ---- Secrets (set real values in .env before switching to production) ----
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-secret-change-me}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      JWT_EXPIRES_DAYS: ${JWT_EXPIRES_DAYS:-30}
+
+      # ---- CORS ----
+      # Same-origin via the frontend nginx proxy means this only matters
+      # when you hit the backend directly (e.g. from curl or an alt
+      # frontend). Comma-separated list of allowed origins.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+
+      # ---- Database ----
+      # Defaults to the SQLite file inside /app/instance (persisted on
+      # the named volume below). Override to point at Postgres etc.
+      DATABASE_URL: ${DATABASE_URL:-}
+
+      # ---- LLM providers (all optional) ----
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      DEEPSEEK_BASE_URL:   ${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      OPENAI_BASE_URL:     ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      LLM_VERIFY_TIMEOUT_SECONDS: ${LLM_VERIFY_TIMEOUT_SECONDS:-10}
+
+      # ---- Google Sign-In ----
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    volumes:
+      # SQLite file + uploaded attachments survive container rebuilds.
+      - prompt-package-data:/app/instance
+    expose:
+      - "5001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - promptpackage
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Build-time Vite vars. Default empty string => axios uses
+        # relative /api paths, which nginx in the frontend container
+        # proxies to the backend service. Override here only when
+        # hosting the frontend on a different origin than the backend.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    image: promptpackage-frontend:latest
+    container_name: promptpackage-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      # Host port is configurable (alibaba-cloud box might already
+      # have nginx on 80). Default 8080 avoids the clash.
+      - "${HOST_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - promptpackage
+
+volumes:
+  prompt-package-data:
+    name: prompt-package-data
+
+networks:
+  promptpackage:
+    name: promptpackage
+    driver: bridge

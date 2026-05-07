@@ -1,0 +1,23 @@
+# Top-level .dockerignore — shared rules for every build context.
+# Each Dockerfile's own build context (backend/ or frontend/) also has
+# its own .dockerignore with workspace-specific patterns.
+
+# VCS & editor chrome
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+
+# Docs & sandbox files
+*.md
+README.md
+docs
+
+# Docker artifacts themselves — never copy the compose wiring INTO an image.
+docker-compose*.yml
+.env
+.env.docker*
+.env.*.local
+**/backend.log
