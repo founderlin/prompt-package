@@ -53,7 +53,11 @@ class BaseConfig:
         "http://localhost:5173",
     ]
 
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", _default_database_url())
+    # ``os.getenv("X", default)`` only uses ``default`` when X is unset.
+    # docker-compose interpolation writes an empty string when the .env
+    # key is blank, which would otherwise give SQLAlchemy an empty URI
+    # and blow up. ``or <default>`` treats "" the same as unset.
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _default_database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEV_JWT_SECRET)
@@ -70,14 +74,15 @@ class BaseConfig:
     # button — password login keeps working unchanged.
     GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID") or None
 
-    # R14: per-provider base URLs (env-overridable). The values referenced
-    # here are read by ``app.providers``; an empty/unset env var means
-    # "use the official endpoint".
-    OPENROUTER_BASE_URL = os.getenv(
-        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    # R14: per-provider base URLs (env-overridable). Same "" vs unset
+    # trap as DATABASE_URL above — docker-compose passes empty strings
+    # for blanks in .env, so use ``or`` to fall back to the official
+    # endpoint instead of breaking with an empty URL.
+    OPENROUTER_BASE_URL = (
+        os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
     )
-    DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1"
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     # Single timeout knob for now — applied to all providers for the cheap
     # verify probe; chat completions get a 6× multiplier inside llm_service.
     OPENROUTER_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "10"))
