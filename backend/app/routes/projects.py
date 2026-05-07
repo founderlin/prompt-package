@@ -9,6 +9,11 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from app.services.chat_service import ChatError, create_conversation, list_for_project
+from app.services.bla_note_service import (
+    BlaNoteError,
+    create_for_project as create_note_for_project,
+    list_for_project as list_notes_for_project,
+)
 from app.services.context_pack_service import (
     ContextPackError,
     generate as generate_context_pack,
@@ -26,6 +31,10 @@ from app.services.project_service import (
     get_for_user,
     list_for_user,
     update_for_user,
+)
+from app.services.wrap_up_service import (
+    WrapUpError,
+    wrap_up_project,
 )
 from app.utils.auth import get_current_user, login_required
 
@@ -183,6 +192,84 @@ def list_memories(project_id: int):
     )
 
 
+# ---- Bla Notes -------------------------------------------------------------
+# Mounted on projects_bp (not on the bla_notes blueprint) because list + create
+# are inherently project-scoped — same split we use for Memories.
+
+
+def _note_error(err: BlaNoteError):
+    return jsonify({"error": err.code, "message": err.message}), err.status
+
+
+@projects_bp.get("/<int:project_id>/notes")
+@login_required
+def list_notes(project_id: int):
+    """List Bla Notes in this project.
+
+    Supports the same filter semantics as Context Zoo for symmetry:
+    ``keyword`` (title / content / tag substring), ``tag`` (exact tag
+    match), ``limit`` (1..200, default 50), ``offset``. Ordered by
+    most-recently-edited first.
+    """
+    user = get_current_user()
+    raw_limit = request.args.get("limit")
+    raw_offset = request.args.get("offset")
+    try:
+        limit = int(raw_limit) if raw_limit is not None else 50
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = int(raw_offset) if raw_offset is not None else 0
+    except (TypeError, ValueError):
+        offset = 0
+
+    try:
+        notes, total = list_notes_for_project(
+            user,
+            project_id,
+            keyword=request.args.get("keyword"),
+            tag=request.args.get("tag"),
+            limit=limit,
+            offset=offset,
+        )
+    except BlaNoteError as err:
+        return _note_error(err)
+
+    return jsonify(
+        {
+            "notes": [
+                n.to_dict(include_content=False, content_preview=240)
+                for n in notes
+            ],
+            "total": total,
+            "limit": min(limit if limit > 0 else 50, 200),
+            "offset": max(0, offset),
+        }
+    )
+
+
+@projects_bp.post("/<int:project_id>/notes")
+@login_required
+def create_note(project_id: int):
+    """Create a Bla Note in this project."""
+    user = get_current_user()
+    data = _payload()
+    try:
+        note = create_note_for_project(
+            user,
+            project_id,
+            title=data.get("title"),
+            content=data.get("content"),
+            tags=data.get("tags"),
+        )
+    except BlaNoteError as err:
+        return _note_error(err)
+    return (
+        jsonify({"note": note.to_dict(include_project=True)}),
+        201,
+    )
+
+
 def _pack_error(err: ContextPackError):
     return jsonify({"error": err.code, "message": err.message}), err.status
 
@@ -221,3 +308,42 @@ def generate_context_pack_route(project_id: int):
     except ContextPackError as err:
         return _pack_error(err)
     return jsonify({"context_pack": pack.to_dict(include_project=True)}), 201
+
+
+def _wrap_up_error(err: WrapUpError):
+    return jsonify({"error": err.code, "message": err.message}), err.status
+
+
+@projects_bp.post("/<int:project_id>/wrap-up")
+@login_required
+def wrap_up_project_route(project_id: int):
+    """Wrap the whole project (or a caller-chosen subset of conversations)
+    up into a Context Pack.
+
+    Body (all optional):
+        title, goal,
+        conversationIds: [int, ...],
+        options: { includeRawReferences: bool, maxSummaryLength: int }
+    """
+    user = get_current_user()
+    data = _payload()
+    try:
+        pack, job = wrap_up_project(
+            user,
+            project_id,
+            payload=data,
+        )
+    except WrapUpError as err:
+        return _wrap_up_error(err)
+    return (
+        jsonify(
+            {
+                "context_pack": pack.to_dict(
+                    include_project=True,
+                    include_sources=True,
+                ),
+                "job": job.to_dict(),
+            }
+        ),
+        201,
+    )

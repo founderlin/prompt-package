@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.extensions import db
 from app.models import Project, User
+from app.models.bla_note import BlaNote
 from app.models.context_pack import ContextPack
 from app.models.conversation import Conversation
 from app.models.memory import Memory
@@ -132,6 +133,9 @@ def delete_for_user(user: User, project_id: int) -> None:
     # conversations (Message rows are cleaned up via the Conversation
     # ORM cascade="all, delete-orphan"), then the project itself.
     Memory.query.filter_by(project_id=project.id).delete(synchronize_session=False)
+    BlaNote.query.filter_by(project_id=project.id).delete(
+        synchronize_session=False
+    )
     ContextPack.query.filter_by(project_id=project.id).delete(
         synchronize_session=False
     )

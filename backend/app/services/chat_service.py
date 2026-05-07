@@ -26,6 +26,10 @@ from app.services.attachment_service import (
     rebind_message_attachments,
     resolve_user_attachments,
 )
+from app.services.bla_note_service import (
+    BlaNoteError,
+    resolve_notes_for_user,
+)
 from app.services.credentials_service import CredentialsError, get_decrypted_key_for
 from app.services.llm_service import LLMError, chat_completion
 from app.services.project_service import ProjectError, get_for_user as get_project_for_user
@@ -229,6 +233,106 @@ CONTEXT_PACK_PREAMBLE = (
 )
 
 
+# R-BLA-NOTE-CHAT: per-message context items (currently only Bla Notes).
+# The preamble is injected as a system message *before* the user turn so
+# the model reads it as background, not as a new question.
+CONTEXT_ITEMS_PREAMBLE = (
+    "The user has attached the following project notes as context for "
+    "this message. Use them only as background; do not quote them "
+    "verbatim unless asked.\n"
+)
+# How many notes we'll feed in one message, and how many chars per note.
+# Both are defensive — the Composer UX already caps selection, but the
+# server-side limits guarantee we never blow the prompt budget regardless
+# of what the client sends.
+NOTES_PER_MESSAGE = 8
+NOTE_CONTENT_LIMIT = 6_000
+
+
+def _clip(text: str, limit: int) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _normalize_context_items(raw, *, max_items: int = NOTES_PER_MESSAGE) -> list[dict]:
+    """Validate the ``context_items`` payload from the request.
+
+    Accepts a list of ``{"type": "bla_note", "id": 123}`` objects (we
+    accept both camelCase ``type`` and ``item_type`` as keys). Returns
+    a cleaned list; raises ``ChatError`` on malformed input.
+
+    Unknown ``type`` values are *ignored* rather than rejected so
+    future frontends can send mixed batches (pack / attachment /
+    etc.) against older backends without 400ing.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ChatError(
+            "validation_error",
+            "contextItems must be a list.",
+        )
+    out: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ChatError(
+                "validation_error",
+                f"contextItems[{idx}] must be an object.",
+            )
+        raw_type = item.get("type") or item.get("item_type")
+        if not isinstance(raw_type, str):
+            raise ChatError(
+                "validation_error",
+                f"contextItems[{idx}].type is required.",
+            )
+        kind = raw_type.strip().lower()
+        raw_id = item.get("id") or item.get("item_id")
+        if raw_id is None:
+            raise ChatError(
+                "validation_error",
+                f"contextItems[{idx}].id is required.",
+            )
+        try:
+            item_id = int(raw_id)
+        except (TypeError, ValueError):
+            raise ChatError(
+                "validation_error",
+                f"contextItems[{idx}].id must be an integer.",
+            )
+
+        # Dedupe by (type, id) while preserving order.
+        key = (kind, item_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"type": kind, "id": item_id})
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _build_context_items_block(notes) -> str:
+    """Render a list of BlaNote rows into the system-message block."""
+    blocks: list[str] = [CONTEXT_ITEMS_PREAMBLE]
+    for note in notes:
+        content = _clip((note.content or "").strip(), NOTE_CONTENT_LIMIT)
+        title = (note.title or "Untitled note").strip()
+        tags = note.get_tags() if hasattr(note, "get_tags") else []
+        header = f"[Bla Note: {title}"
+        if tags:
+            header += f" · tags: {', '.join(tags)}"
+        header += "]"
+        blocks.append(header)
+        if content:
+            blocks.append(content)
+        blocks.append("")  # blank line between notes
+    return "\n".join(blocks).rstrip()
+
+
 def _attachment_to_content_parts(att: Attachment) -> list[dict]:
     """Render one attachment as OpenAI-compatible multimodal parts.
 
@@ -306,12 +410,21 @@ def _build_message_payload(
     *,
     context_pack: ContextPack | None = None,
     attachments: list[Attachment] | None = None,
+    context_notes=None,
 ) -> list[dict]:
     """Build the OpenRouter messages payload.
 
-    Optionally prepends a synthetic ``system`` message carrying the
-    Context Pack body. The pack message is **not** persisted — flipping
-    or removing the pack is non-destructive.
+    Optionally prepends two synthetic ``system`` messages:
+
+    1. The conversation-level Context Pack body (set via
+       ``convo.context_pack_id``). Survives across turns.
+    2. A per-message ``CONTEXT_ITEMS_PREAMBLE`` block summarizing any
+       Bla Notes the user attached to *this* turn only. Persisted into
+       :attr:`Message.context_metadata` so the UI can render a
+       provenance chip later, but never re-played into subsequent
+       turns — attaching a note is a one-shot decision.
+
+    Neither synthetic system message lands in the ``messages`` table.
     """
     trimmed = history[-MAX_HISTORY_MESSAGES:] if len(history) > MAX_HISTORY_MESSAGES else history
     payload: list[dict] = []
@@ -322,6 +435,10 @@ def _build_message_payload(
                 "content": CONTEXT_PACK_PREAMBLE.format(body=context_pack.body.strip()),
             }
         )
+    if context_notes:
+        block = _build_context_items_block(context_notes)
+        if block.strip():
+            payload.append({"role": "system", "content": block})
     payload.extend({"role": m.role, "content": m.content} for m in trimmed)
     payload.append(
         {
@@ -342,6 +459,7 @@ def send_user_message(
     model: str | None = None,
     provider: str | None = None,
     attachment_ids: list[int] | None = None,
+    context_items: list[dict] | None = None,
 ) -> tuple[Message, Message, Conversation]:
     """Persist the user's message, call the right LLM provider, persist the reply.
 
@@ -349,6 +467,11 @@ def send_user_message(
     back to whatever was last set on the conversation (or our defaults).
     ``attachment_ids`` is a list of previously-uploaded Attachment ids
     that should be folded into the user message as multimodal parts.
+    ``context_items`` is a list of ``{"type": "bla_note", "id": 42}``
+    descriptors — their resolved content is injected as a system
+    message for **this turn only** and persisted into
+    ``Message.context_metadata`` so the UI can render provenance
+    chips on the history.
 
     Returns ``(user_message, assistant_message, conversation)``.
     """
@@ -382,6 +505,40 @@ def send_user_message(
         user, convo.id, attachment_ids or []
     )
 
+    # Resolve context_items (currently only ``type: "bla_note"``).
+    # Unknown types are dropped silently by ``_normalize_context_items``;
+    # bad shapes raise ChatError.
+    normalized_items = _normalize_context_items(context_items)
+    note_items = [it for it in normalized_items if it["type"] == "bla_note"]
+    note_ids = [it["id"] for it in note_items]
+    try:
+        context_notes = resolve_notes_for_user(
+            user, convo.project_id, note_ids
+        ) if note_ids else []
+    except BlaNoteError as err:
+        raise ChatError(err.code, err.message, status=err.status) from err
+
+    # Build the persisted metadata blob (title-only snapshot so the
+    # history view can render a chip even if the note is later edited
+    # or deleted).
+    persisted_items = []
+    by_id = {n.id: n for n in context_notes}
+    for it in normalized_items:
+        if it["type"] == "bla_note":
+            note = by_id.get(it["id"])
+            if note is None:
+                continue
+            persisted_items.append({
+                "type": "bla_note",
+                "id": note.id,
+                "title": note.title,
+            })
+        else:
+            # Forward-compat: we persist unknown types verbatim so a
+            # later client can interpret them. The server doesn't
+            # inject content for these yet.
+            persisted_items.append(dict(it))
+
     history = list(convo.messages.order_by(Message.id.asc()).all())
 
     user_msg = Message(
@@ -391,6 +548,8 @@ def send_user_message(
         model=chosen_model,
         provider=chosen_provider,
     )
+    if persisted_items:
+        user_msg.set_context_metadata({"context_items": persisted_items})
     db.session.add(user_msg)
 
     if not convo.title:
@@ -419,6 +578,7 @@ def send_user_message(
         cleaned,
         context_pack=pack,
         attachments=attachments,
+        context_notes=context_notes,
     )
 
     try:

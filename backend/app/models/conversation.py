@@ -9,6 +9,7 @@ billing surfaces can lean on it without another OpenRouter round-trip.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from app.extensions import db
@@ -157,7 +158,37 @@ class Message(db.Model):
     completion_tokens = db.Column(db.Integer, nullable=True)
     total_tokens = db.Column(db.Integer, nullable=True)
 
+    # R-BLA-NOTE-CHAT: JSON-encoded metadata about any "context items"
+    # (bla notes now; packs / attachments / external snippets later)
+    # that the user attached to *this* message at send time.
+    #
+    # Shape: {"context_items": [{"type": "bla_note", "id": 42,
+    #                            "title": "Product ideas"}]}
+    #
+    # Stored as TEXT for SQLite portability. Column name is
+    # ``context_metadata`` because SQLAlchemy reserves ``Model.metadata``.
+    context_metadata = db.Column(db.Text, nullable=True)
+
     created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    def get_context_metadata(self) -> dict:
+        """Parse the JSON blob — tolerates NULL / junk."""
+        if not self.context_metadata:
+            return {}
+        try:
+            data = json.loads(self.context_metadata)
+        except (TypeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def set_context_metadata(self, payload: dict | None) -> None:
+        if not payload or not isinstance(payload, dict):
+            self.context_metadata = None
+            return
+        try:
+            self.context_metadata = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            self.context_metadata = None
 
     def to_dict(self, *, include_attachments: bool = True) -> dict:
         data = {
@@ -170,6 +201,7 @@ class Message(db.Model):
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
+            "context_metadata": self.get_context_metadata() or None,
             "created_at": _isoformat(self.created_at),
         }
         if include_attachments:

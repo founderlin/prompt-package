@@ -71,6 +71,19 @@
           >
             Start chat
           </RouterLink>
+          <button
+            class="btn btn--ghost"
+            type="button"
+            :disabled="!conversations.length"
+            :title="
+              conversations.length
+                ? 'Wrap this whole project into a Context Pack'
+                : 'Start at least one blabla first'
+            "
+            @click="openWrapUp"
+          >
+            Wrap Up Project
+          </button>
           <button class="btn btn--ghost" type="button" @click="openEdit">Edit</button>
           <button
             class="btn btn--danger btn--ghost"
@@ -84,7 +97,16 @@
         </div>
       </header>
 
-      <section class="card">
+      <!-- Project content grid:
+           Top row (desktop): Blablas · Bla Notes · Context Packs
+           Bottom row (full width): Memories
+           Each section keeps its own id/anchor so `#project-memories`
+           / `#project-bla-notes` deep-links continue to scroll
+           correctly — only the visual layout changes. On narrow
+           viewports the grid collapses to a single column and DOM
+           order is preserved. -->
+      <div class="project-sections">
+      <section class="card project-section project-section--blablas">
         <header class="section-row">
           <div>
             <h3 class="card__title card__title--sm">Blablas</h3>
@@ -199,7 +221,7 @@
            from ProjectChatView) can deep-link here via `#project-memories`.
            See the focusMemoriesHash() helper + route-hash watcher in this
            file's <script setup>. -->
-      <section id="project-memories" class="card">
+      <section id="project-memories" class="card project-section project-section--memories">
         <header class="section-row">
           <div>
             <h3 class="card__title card__title--sm">Memories</h3>
@@ -329,7 +351,125 @@
         </EmptyState>
       </section>
 
-      <section class="card">
+      <!-- Bla Notes section -->
+      <section id="project-bla-notes" class="card project-section project-section--bla-notes">
+        <header class="section-row">
+          <div>
+            <h3 class="card__title card__title--sm">Bla Notes</h3>
+            <p class="text-secondary section-row__hint">
+              Hand-written notes, ideas, and context you want to keep or reference in chats.
+            </p>
+          </div>
+          <button
+            class="btn btn--primary btn--sm"
+            type="button"
+            :disabled="notesLoading"
+            @click="openNoteForm('create')"
+          >
+            New Note
+          </button>
+        </header>
+
+        <div v-if="notesLoading" class="section-loading">
+          <span class="spinner" aria-hidden="true" />
+          <span class="text-secondary">Loading notes…</span>
+        </div>
+
+        <div v-else-if="notesError" class="banner banner--error" role="alert">
+          <strong>Could not load Bla Notes.</strong>
+          <span>{{ notesError }}</span>
+          <button
+            class="btn btn--ghost btn--sm"
+            type="button"
+            @click="loadNotes"
+          >
+            Retry
+          </button>
+        </div>
+
+        <ul v-else-if="notes.length" class="note-list">
+          <li
+            v-for="note in notes"
+            :key="note.id"
+            class="note-row"
+          >
+            <div class="note-row__main">
+              <h4 class="note-row__title">{{ note.title }}</h4>
+              <p v-if="note.content_preview" class="note-row__preview">
+                {{ note.content_preview }}
+              </p>
+              <div v-if="note.tags && note.tags.length" class="note-row__tags">
+                <span
+                  v-for="(tag, idx) in note.tags"
+                  :key="idx"
+                  class="chip chip--primary note-row__tag"
+                >
+                  {{ tag }}
+                </span>
+              </div>
+              <p class="note-row__meta text-secondary">
+                Updated {{ relativeTime(note.updated_at) }}
+              </p>
+            </div>
+            <div class="note-row__actions">
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm"
+                :disabled="deletingNoteId === note.id"
+                @click="openNoteForm('edit', note)"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm btn--danger"
+                :disabled="deletingNoteId === note.id"
+                @click="deleteNote(note)"
+              >
+                <span v-if="deletingNoteId === note.id" class="spinner" aria-hidden="true" />
+                Delete
+              </button>
+            </div>
+          </li>
+        </ul>
+
+        <EmptyState
+          v-else
+          compact
+          title="No Bla Notes yet"
+          description="Record a project idea, decision, or any context you want to keep handy."
+        >
+          <template #icon>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="32"
+              height="32"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="9" y1="13" x2="15" y2="13" />
+              <line x1="9" y1="17" x2="15" y2="17" />
+            </svg>
+          </template>
+          <template #actions>
+            <button
+              class="btn btn--primary btn--sm"
+              type="button"
+              @click="openNoteForm('create')"
+            >
+              Create your first note
+            </button>
+          </template>
+        </EmptyState>
+      </section>
+
+      <section class="card project-section project-section--packs">
         <header class="section-row">
           <div>
             <h3 class="card__title card__title--sm">Context Packs</h3>
@@ -494,12 +634,33 @@
           </template>
         </EmptyState>
       </section>
+      </div>
 
       <ProjectFormDialog
         :open="dialogOpen"
         :project="project"
         @close="closeDialog"
         @updated="onUpdated"
+      />
+
+      <WrapUpDialog
+        :open="wrapUpOpen"
+        scope="project"
+        :project-id="project.id"
+        :context-label="project.name"
+        @close="closeWrapUp"
+        @success="onWrapUpSuccess"
+        @view-pack="onViewWrapUpPack"
+      />
+
+      <BlaNoteFormDialog
+        :open="noteFormOpen"
+        :mode="noteFormMode"
+        :project-id="project.id"
+        :note="noteToEdit"
+        :busy="noteSaving"
+        @save="onNoteSave"
+        @cancel="closeNoteForm"
       />
     </template>
   </div>
@@ -510,10 +671,14 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ProjectFormDialog from '@/components/projects/ProjectFormDialog.vue'
+import WrapUpDialog from '@/components/wrapup/WrapUpDialog.vue'
+import BlaNoteFormDialog from '@/components/notes/BlaNoteFormDialog.vue'
 import projectsApi from '@/api/projects'
 import chatApi from '@/api/chat'
 import memoriesApi from '@/api/memories'
 import contextPacksApi from '@/api/contextPacks'
+import blaNotesApi from '@/api/blaNotes'
+import { useToasts } from '@/stores/toasts'
 import { describeApiError } from '@/utils/errors'
 import { formatDateTime, relativeTime } from '@/utils/time'
 import { modelLabel } from '@/constants/models'
@@ -537,6 +702,8 @@ const project = ref(null)
 const errorMessage = ref('')
 const deleting = ref(false)
 const dialogOpen = ref(false)
+const wrapUpOpen = ref(false)
+const toasts = useToasts()
 
 const conversations = ref([])
 const conversationsLoading = ref(false)
@@ -558,6 +725,15 @@ const generating = ref(false)
 const generateError = ref('')
 const copiedPackId = ref(null)
 let copiedTimer = null
+
+const notes = ref([])
+const notesLoading = ref(false)
+const notesError = ref('')
+const noteFormOpen = ref(false)
+const noteFormMode = ref('create') // 'create' | 'edit'
+const noteToEdit = ref(null)
+const noteSaving = ref(false)
+const deletingNoteId = ref(null)
 
 const groupedMemories = computed(() => {
   const order = ['decision', 'todo', 'fact', 'question']
@@ -587,6 +763,7 @@ async function loadProject() {
     if (state.value === 'ready') {
       loadConversations()
       loadMemories()
+      loadNotes()
       loadPacks()
     }
   } catch (err) {
@@ -660,6 +837,109 @@ async function loadPacks() {
     packsError.value = describeApiError(err, 'Could not load Context Packs.')
   } finally {
     packsLoading.value = false
+  }
+}
+
+// ---- Bla Notes ---------------------------------------------------------
+
+async function loadNotes() {
+  if (!project.value) return
+  notesLoading.value = true
+  notesError.value = ''
+  try {
+    const data = await blaNotesApi.list(project.value.id, { limit: 100 })
+    notes.value = Array.isArray(data?.notes) ? data.notes : []
+  } catch (err) {
+    notesError.value = describeApiError(err, 'Could not load Bla Notes.')
+  } finally {
+    notesLoading.value = false
+  }
+}
+
+function openNoteForm(mode, note = null) {
+  noteFormMode.value = mode
+  noteToEdit.value = note
+  noteFormOpen.value = true
+}
+
+function closeNoteForm() {
+  noteFormOpen.value = false
+  noteToEdit.value = null
+}
+
+async function onNoteSave(payload) {
+  if (!project.value || noteSaving.value) return
+  noteSaving.value = true
+  try {
+    if (noteFormMode.value === 'create') {
+      const data = await blaNotesApi.create(project.value.id, {
+        title: payload.title,
+        content: payload.content,
+        tags: payload.tags
+      })
+      const created = data?.note
+      if (created) {
+        notes.value = [created, ...notes.value]
+        toasts.push({
+          kind: 'success',
+          message: `Created "${created.title}".`
+        })
+      }
+    } else {
+      const data = await blaNotesApi.update(payload.id, {
+        title: payload.title,
+        content: payload.content,
+        tags: payload.tags
+      })
+      const updated = data?.note
+      if (updated) {
+        const idx = notes.value.findIndex((n) => n.id === updated.id)
+        if (idx >= 0) {
+          notes.value[idx] = updated
+        }
+        toasts.push({
+          kind: 'success',
+          message: `Updated "${updated.title}".`
+        })
+      }
+    }
+    closeNoteForm()
+  } catch (err) {
+    toasts.push({
+      kind: 'error',
+      message: describeApiError(
+        err,
+        noteFormMode.value === 'create'
+          ? 'Could not create note.'
+          : 'Could not update note.'
+      )
+    })
+  } finally {
+    noteSaving.value = false
+  }
+}
+
+async function deleteNote(note) {
+  if (!note || deletingNoteId.value) return
+  const ok = window.confirm(
+    `Delete "${note.title}"? This cannot be undone.`
+  )
+  if (!ok) return
+  deletingNoteId.value = note.id
+  try {
+    await blaNotesApi.remove(note.id)
+    notes.value = notes.value.filter((n) => n.id !== note.id)
+    toasts.push({
+      kind: 'success',
+      message: `Deleted "${note.title}".`
+    })
+  } catch (err) {
+    toasts.push({
+      kind: 'error',
+      message: describeApiError(err, 'Could not delete this note.')
+    })
+  } finally {
+    deletingNoteId.value = null
   }
 }
 
@@ -747,6 +1027,52 @@ function closeDialog() {
 function onUpdated(updated) {
   project.value = updated
   closeDialog()
+}
+
+function openWrapUp() {
+  wrapUpOpen.value = true
+}
+
+function closeWrapUp() {
+  wrapUpOpen.value = false
+}
+
+function onWrapUpSuccess(pack /*, job */) {
+  // Refresh the packs list so the new pack shows up immediately in
+  // the "Context Packs" section without a page reload.
+  if (pack) {
+    packs.value = [shapePackForList(pack), ...packs.value]
+  }
+  toasts.push({
+    kind: 'success',
+    message: `Wrap Up complete · "${pack?.title || 'Context Pack'}" saved.`,
+    link:
+      pack && project.value
+        ? {
+            name: 'project-context-pack',
+            params: {
+              id: String(project.value.id),
+              packId: String(pack.id)
+            }
+          }
+        : null,
+    linkText: pack ? 'View Context Pack' : ''
+  })
+}
+
+function onViewWrapUpPack(pack) {
+  if (!pack || !project.value) {
+    wrapUpOpen.value = false
+    return
+  }
+  wrapUpOpen.value = false
+  router.push({
+    name: 'project-context-pack',
+    params: {
+      id: String(project.value.id),
+      packId: String(pack.id)
+    }
+  })
 }
 
 async function onDelete() {
@@ -957,6 +1283,75 @@ async function focusHash(hash) {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* ---- Project sections layout -----------------------------------------
+   The four project sections (Blablas, Bla Notes, Context Packs,
+   Memories) live inside `.project-sections`. DOM order is
+   Blablas → Memories → Bla Notes → Context Packs (chosen so deep
+   links to #project-memories and #project-bla-notes keep working).
+   CSS `grid-template-areas` remaps them visually:
+
+     ┌───────────┬───────────┬───────────┐
+     │  blablas  │ bla-notes │   packs   │   <- top row, 3 columns
+     ├───────────┴───────────┴───────────┤
+     │              memories             │   <- full-width bottom row
+     └───────────────────────────────────┘
+
+   On narrow viewports we collapse to a single column in DOM order
+   (which is still logical: chats → memories → notes → packs).
+------------------------------------------------------------------- */
+
+.project-sections {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    'blablas bla-notes packs'
+    'memories memories memories';
+  gap: var(--space-4);
+  align-items: stretch;
+}
+
+.project-section {
+  min-width: 0; /* allow inner content to shrink inside grid cells */
+}
+
+.project-section--blablas {
+  grid-area: blablas;
+}
+.project-section--bla-notes {
+  grid-area: bla-notes;
+}
+.project-section--packs {
+  grid-area: packs;
+}
+.project-section--memories {
+  grid-area: memories;
+}
+
+/* Medium viewports: 2-col top row + stacked memories.
+   bla-notes drops under blablas+packs into a new row so we stay at
+   ≥220px per card without tiny text. */
+@media (max-width: 1100px) {
+  .project-sections {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      'blablas packs'
+      'bla-notes bla-notes'
+      'memories memories';
+  }
+}
+
+/* Mobile: single column in DOM order (natural flow). */
+@media (max-width: 720px) {
+  .project-sections {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'blablas'
+      'memories'
+      'bla-notes'
+      'packs';
+  }
 }
 
 .section-row {
@@ -1362,5 +1757,82 @@ async function focusHash(hash) {
   .project-detail__actions .btn {
     flex: 1;
   }
+}
+
+/* ---- Bla Notes -------------------------------------------------------- */
+
+.note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.note-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.note-row:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+.note-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.note-row__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.note-row__preview {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note-row__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.note-row__tag {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+
+.note-row__meta {
+  font-size: var(--text-xs);
+  margin: 0;
+}
+
+.note-row__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 </style>

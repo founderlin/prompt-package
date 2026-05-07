@@ -260,7 +260,7 @@ const primaryNav = [
   { to: '/dashboard', label: 'Dashboard', icon: ICON_DASHBOARD },
   { to: '/projects', label: 'Projects', icon: ICON_PROJECTS },
   { to: '/search', label: 'Search', icon: ICON_SEARCH },
-  { to: '/context-packs', label: 'Context Packs', icon: ICON_PACK }
+  { to: '/context-zoo', label: 'Context Zoo', icon: ICON_PACK }
 ]
 
 const secondaryNav = [

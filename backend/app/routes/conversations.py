@@ -42,6 +42,10 @@ from app.services.memory_service import (
     list_for_conversation as list_memories_for_conversation,
     summarize_conversation,
 )
+from app.services.wrap_up_service import (
+    WrapUpError,
+    wrap_up_conversation,
+)
 from app.utils.auth import get_current_user, login_required
 
 conversations_bp = Blueprint("conversations", __name__)
@@ -56,6 +60,10 @@ def _error(err: ChatError):
 
 
 def _memory_error(err: MemoryError):
+    return jsonify({"error": err.code, "message": err.message}), err.status
+
+
+def _wrap_up_error(err: WrapUpError):
     return jsonify({"error": err.code, "message": err.message}), err.status
 
 
@@ -166,6 +174,15 @@ def create_message(conversation_id: int):
             ),
             400,
         )
+    # ``context_items`` is optional. Accept both the canonical camelCase
+    # shape used by the frontend (``contextItems``) and snake_case for
+    # hand-rolled API calls. Service-layer validation enforces the
+    # per-item schema.
+    raw_context_items = (
+        data.get("context_items")
+        if "context_items" in data
+        else data.get("contextItems")
+    )
     try:
         user_msg, assistant_msg, convo = send_user_message(
             user,
@@ -174,6 +191,7 @@ def create_message(conversation_id: int):
             model=data.get("model"),
             provider=data.get("provider"),
             attachment_ids=raw_ids,
+            context_items=raw_context_items,
         )
     except ChatError as err:
         return _error(err)
@@ -212,6 +230,43 @@ def summarize(conversation_id: int):
             }
         ),
         200,
+    )
+
+
+@conversations_bp.post("/<int:conversation_id>/wrap-up")
+@login_required
+def wrap_up(conversation_id: int):
+    """Wrap the conversation up into a Context Pack.
+
+    Body (all optional):
+        title, goal,
+        options: { includeRawReferences: bool, maxSummaryLength: int }
+
+    Returns the new Context Pack + the job record used to drive
+    progress in the UI. The job is always ``completed`` on the happy
+    path of this MVP because execution is synchronous.
+    """
+    user = get_current_user()
+    data = _payload()
+    try:
+        pack, job = wrap_up_conversation(
+            get_current_user(),
+            conversation_id,
+            payload=data,
+        )
+    except WrapUpError as err:
+        return _wrap_up_error(err)
+    return (
+        jsonify(
+            {
+                "context_pack": pack.to_dict(
+                    include_project=True,
+                    include_sources=True,
+                ),
+                "job": job.to_dict(),
+            }
+        ),
+        201,
     )
 
 

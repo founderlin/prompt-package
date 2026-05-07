@@ -48,12 +48,18 @@ export const chatApi = {
   },
   sendMessage(
     conversationId,
-    { content, model, provider, attachmentIds, signal } = {}
+    { content, model, provider, attachmentIds, contextItems, signal } = {}
   ) {
     const body = { content, model }
     if (provider) body.provider = provider
     if (Array.isArray(attachmentIds) && attachmentIds.length) {
       body.attachment_ids = attachmentIds
+    }
+    if (Array.isArray(contextItems) && contextItems.length) {
+      // Frontend sends camelCase; backend accepts both shapes (see
+      // conversations.create_message). Pick camelCase for consistency
+      // with the rest of the chat payload.
+      body.contextItems = contextItems
     }
     const config = {}
     if (signal) config.signal = signal

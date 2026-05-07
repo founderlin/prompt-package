@@ -4,6 +4,8 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import MessageList from '@/components/chat/MessageList.vue'
 import ModelPicker from '@/components/chat/ModelPicker.vue'
+import WrapUpDialog from '@/components/wrapup/WrapUpDialog.vue'
+import ChatContextPicker from '@/components/chat/ChatContextPicker.vue'
 import chatApi from '@/api/chat'
 import contextPacksApi from '@/api/contextPacks'
 import memoriesApi from '@/api/memories'
@@ -72,6 +74,22 @@ const summarizeError = ref('')
 const summarizeBanner = ref('')
 const memoriesList = ref([])
 const memoriesOpen = ref(false)
+
+// R-WRAPUP: Conversation-level Context Pack generation. This is separate
+// from ``summarizing`` (the legacy memory-extraction flow driven by
+// handleWrapUp) — Wrap Up creates a full Context Pack row via the new
+// /api/conversations/:id/wrap-up endpoint.
+const wrapUpOpen = ref(false)
+
+// R-BLA-NOTE-CHAT: per-message context items chosen via ChatContextPicker.
+// Each item is { type: 'bla_note', id: <int>, title: <string> }.
+// Cleared automatically after a successful send.
+const contextPickerOpen = ref(false)
+const selectedContextItems = ref([])
+// Composer draft is usually managed inside ChatComposer (which has an
+// internal ref initialized from :model-value). We bind v-model so
+// "Insert to input" from the context picker can append text to it.
+const composerDraft = ref('')
 
 // R13: Context Pack picker (Prompt Plus)
 const packPickerOpen = ref(false)
@@ -571,11 +589,18 @@ async function handleSubmit(content) {
   clearPendingAttachments()
 
   try {
+    // Snapshot context items at send-time so a successful send can
+    // clear the selection without racing with a slow network reply.
+    const contextItemsToSend = selectedContextItems.value.map((it) => ({
+      type: it.type,
+      id: it.id
+    }))
     const data = await chatApi.sendMessage(conversation.value.id, {
       content: content || '',
       model: modelId,
       provider: providerId,
       attachmentIds,
+      contextItems: contextItemsToSend,
       signal: controller?.signal
     })
     // Replace the optimistic temp bubble with the authoritative pair from
@@ -616,6 +641,10 @@ async function handleSubmit(content) {
         data.conversation.provider
       )
     }
+    // R-BLA-NOTE-CHAT: the context items we just sent are now persisted
+    // on data.user_message.context_metadata — safe to clear the draft
+    // selection. Future composes start fresh.
+    selectedContextItems.value = []
     // Revoke optimistic preview URLs now that the server has the canonical copy.
     for (const a of inflightAttachments) {
       if (a.previewUrl && typeof URL?.revokeObjectURL === 'function') {
@@ -1008,6 +1037,50 @@ async function handleWrapUp() {
   }
 }
 
+// ---- R-WRAPUP: Conversation-level Context Pack flow ----
+function openConversationWrapUp() {
+  if (!conversation.value) return
+  if (realMessageCount.value < 1) return
+  wrapUpOpen.value = true
+}
+
+function closeConversationWrapUp() {
+  wrapUpOpen.value = false
+}
+
+function onConversationWrapUpSuccess(pack /*, job */) {
+  toasts.push({
+    kind: 'success',
+    message: `Wrap Up complete · "${pack?.title || 'Context Pack'}" saved.`,
+    link:
+      pack && project.value
+        ? {
+            name: 'project-context-pack',
+            params: {
+              id: String(project.value.id),
+              packId: String(pack.id)
+            }
+          }
+        : null,
+    linkText: pack ? 'View Context Pack' : ''
+  })
+  // Refresh the pack picker list so the freshly-made pack is available
+  // for immediate attachment in the Prompt+ flow.
+  loadAvailablePacks()
+}
+
+function onViewConversationWrapUpPack(pack) {
+  wrapUpOpen.value = false
+  if (!pack || !project.value) return
+  router.push({
+    name: 'project-context-pack',
+    params: {
+      id: String(project.value.id),
+      packId: String(pack.id)
+    }
+  })
+}
+
 // ---- R13: Context Pack picker ----
 const attachedPack = computed(() => conversation.value?.context_pack || null)
 
@@ -1079,6 +1152,46 @@ function openPackPicker() {
 function closePackPicker() {
   packPickerOpen.value = false
   bindingPackId.value = null
+}
+
+// ---- R-BLA-NOTE-CHAT: Context picker handlers ------------------------
+function openContextPicker() {
+  if (!conversation.value) return
+  contextPickerOpen.value = true
+}
+
+function closeContextPicker() {
+  contextPickerOpen.value = false
+}
+
+function onContextAttach(items) {
+  // Replace the current draft selection wholesale — the picker round-
+  // trips the user's full intent each time it's opened, so the
+  // returned list is authoritative.
+  selectedContextItems.value = Array.isArray(items) ? items.slice() : []
+}
+
+function onContextInsert(markdownBlock) {
+  if (!markdownBlock) return
+  // Append to the composer draft. The composer uses v-model internally
+  // on its own `internal` ref; we push through the ref forwarded by
+  // `composer.value` when possible, else via a controlled prop. Here
+  // the simplest path is a small helper on the composer ref — but the
+  // ChatComposer currently exposes only `focus` + `reset`. To avoid
+  // breaking its API, we stage the text into a local prop and let the
+  // composer sync via watch. For MVP, we set a draft override that
+  // the template binds to the composer's :model-value.
+  composerDraft.value =
+    composerDraft.value && composerDraft.value.trim()
+      ? `${composerDraft.value.trimEnd()}\n\n${markdownBlock}`
+      : markdownBlock
+  nextTick(() => composer.value?.focus())
+}
+
+function removeContextItem(itemId) {
+  selectedContextItems.value = selectedContextItems.value.filter(
+    (it) => it.id !== itemId
+  )
 }
 
 async function selectPack(packId) {
@@ -1285,26 +1398,15 @@ onBeforeUnmount(() => {
             <button
               class="btn btn--ghost btn--sm"
               type="button"
-              :disabled="!canSummarize || summarizing || sending"
+              :disabled="!canSummarize || sending"
               :title="
                 !canSummarize
                   ? 'Send at least one user/assistant exchange first'
-                  : conversation?.summarized_at
-                    ? 'Re-summarize this blabla'
-                    : 'Summarize this blabla and extract memories'
+                  : 'Wrap this blabla into a reusable Context Pack'
               "
-              @click="handleWrapUp"
+              @click="openConversationWrapUp"
             >
-              <span v-if="summarizing" class="spinner" aria-hidden="true" />
-              <span>
-                {{
-                  summarizing
-                    ? 'Wrapping…'
-                    : conversation?.summarized_at
-                      ? 'Re-wrap'
-                      : 'Wrap'
-                }}
-              </span>
+              <span>Wrap Up</span>
             </button>
           </div>
         </header>
@@ -1445,8 +1547,52 @@ onBeforeUnmount(() => {
           @edit="handleEditMessage"
         />
 
+        <!-- R-BLA-NOTE-CHAT: selected context items chips. Renders right
+             above the composer so the user never loses track of what's
+             about to ride along with the next send. -->
+        <ul
+          v-if="selectedContextItems.length"
+          class="chat-context-chips"
+          aria-label="Attached context"
+        >
+          <li
+            v-for="item in selectedContextItems"
+            :key="item.id"
+            class="chat-context-chip"
+          >
+            <span class="chat-context-chip__kind">
+              {{ item.type === 'bla_note' ? 'Note' : item.type }}
+            </span>
+            <span class="chat-context-chip__title" :title="item.title">
+              {{ item.title || `#${item.id}` }}
+            </span>
+            <button
+              type="button"
+              class="chat-context-chip__remove"
+              :aria-label="`Remove ${item.title || 'context item'}`"
+              @click="removeContextItem(item.id)"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <line x1="6" y1="6" x2="18" y2="18" />
+                <line x1="6" y1="18" x2="18" y2="6" />
+              </svg>
+            </button>
+          </li>
+        </ul>
+
         <ChatComposer
           ref="composer"
+          v-model="composerDraft"
           :pending="sending"
           :disabled="composerDisabled"
           :placeholder="composerPlaceholder"
@@ -1458,6 +1604,26 @@ onBeforeUnmount(() => {
           @remove-attachment="handleRemoveAttachment"
         >
           <template #leading>
+            <button
+              type="button"
+              class="btn btn--ghost btn--sm chat-context-add"
+              :disabled="sending || !conversation"
+              :title="
+                selectedContextItems.length
+                  ? `Edit context (${selectedContextItems.length} selected)`
+                  : 'Add context for this message'
+              "
+              @click="openContextPicker"
+            >
+              <span aria-hidden="true">+</span>
+              <span>Context</span>
+              <span
+                v-if="selectedContextItems.length"
+                class="chat-context-add__badge"
+              >
+                {{ selectedContextItems.length }}
+              </span>
+            </button>
             <ModelPicker
               :models="userModels"
               :current-model="selectedModel"
@@ -1615,6 +1781,25 @@ onBeforeUnmount(() => {
         </ul>
       </div>
     </div>
+
+    <WrapUpDialog
+      :open="wrapUpOpen"
+      scope="conversation"
+      :conversation-id="conversation ? conversation.id : null"
+      :context-label="conversation ? conversation.title || 'Untitled conversation' : ''"
+      @close="closeConversationWrapUp"
+      @success="onConversationWrapUpSuccess"
+      @view-pack="onViewConversationWrapUpPack"
+    />
+
+    <ChatContextPicker
+      :open="contextPickerOpen"
+      :project-id="projectIdNum"
+      :initial-selected-ids="selectedContextItems.map((it) => it.id)"
+      @cancel="closeContextPicker"
+      @attach="onContextAttach"
+      @insert="onContextInsert"
+    />
   </div>
 </template>
 
@@ -2465,5 +2650,92 @@ onBeforeUnmount(() => {
   .prompt-plus__title {
     max-width: 120px;
   }
+}
+
+/* ---- R-BLA-NOTE-CHAT: context chips + add button -------------------- */
+
+.chat-context-chips {
+  list-style: none;
+  margin: 0 var(--space-5) 8px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: 1px solid rgba(26, 115, 232, 0.25);
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  max-width: 260px;
+  min-width: 0;
+}
+
+.chat-context-chip__kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+.chat-context-chip__title {
+  font-weight: 500;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.chat-context-chip__remove {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.chat-context-chip__remove:hover {
+  background: rgba(26, 115, 232, 0.15);
+}
+
+.chat-context-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  height: 30px;
+}
+
+.chat-context-add__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 5px;
+  height: 18px;
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
 }
 </style>

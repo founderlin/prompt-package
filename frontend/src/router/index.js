@@ -68,6 +68,19 @@ const router = createRouter({
           meta: { title: 'Context Packs' }
         },
         {
+          path: 'context-zoo',
+          name: 'context-zoo',
+          component: () => import('@/views/ContextZooView.vue'),
+          meta: { title: 'Context Zoo' }
+        },
+        {
+          path: 'context-zoo/:contextPackId(\\d+)',
+          name: 'context-zoo-detail',
+          component: () => import('@/views/ContextZooDetailView.vue'),
+          props: true,
+          meta: { title: 'Context Pack' }
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),

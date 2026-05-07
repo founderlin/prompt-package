@@ -100,6 +100,14 @@ def _apply_lightweight_migrations() -> None:
                 conn.execute(
                     text("ALTER TABLE messages ADD COLUMN provider VARCHAR(40)")
                 )
+            if "context_metadata" not in cols:
+                # R-BLA-NOTE-CHAT: JSON-encoded record of any context
+                # items (bla notes, future packs / attachments) that
+                # were attached to this message at send time. NULL on
+                # legacy rows.
+                conn.execute(
+                    text("ALTER TABLE messages ADD COLUMN context_metadata TEXT")
+                )
 
     if "users" in table_names:
         # R15: Google Sign-In support adds 3 columns. ``google_sub`` is
@@ -126,12 +134,394 @@ def _apply_lightweight_migrations() -> None:
                     text("ALTER TABLE users ADD COLUMN auth_provider VARCHAR(20)")
                 )
 
+    # R-WRAPUP: Context Pack grew structured metadata (summary / keywords /
+    # description / source_type) plus an optional conversation_id back-link.
+    # ContextPackSource + ContextPackJob are whole new tables picked up by
+    # db.create_all() automatically.
+    #
+    # R-PACK-CORE extends ContextPack with extensibility hooks
+    # (structured_content, visibility, graph_data, vector_index_id,
+    # version, parent_pack_id, usage_count, last_used_at) and relaxes
+    # ``project_id`` to NULLABLE. Since SQLite's ALTER TABLE can't change
+    # column nullability, that last change requires a one-shot table
+    # rebuild — guarded by a probe so it runs at most once per DB.
+    if "context_packs" in table_names:
+        cols = {c["name"] for c in inspector.get_columns("context_packs")}
+        with db.engine.begin() as conn:
+            if "summary" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_packs ADD COLUMN summary TEXT")
+                )
+            if "description" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_packs ADD COLUMN description TEXT")
+                )
+            if "keywords" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_packs ADD COLUMN keywords TEXT")
+                )
+            if "source_type" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN source_type VARCHAR(20)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_packs_source_type ON context_packs(source_type)"
+                    )
+                )
+            if "conversation_id" not in cols:
+                # Per-row FK isn't possible via ALTER TABLE on SQLite; the
+                # ORM-side relationship still works off the integer column,
+                # and we enforce ownership in the service layer.
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN conversation_id INTEGER"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_packs_conversation_id "
+                        "ON context_packs(conversation_id)"
+                    )
+                )
+            # R-PACK-CORE extensibility columns.
+            if "structured_content" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_packs ADD COLUMN structured_content TEXT")
+                )
+            if "visibility" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN visibility "
+                        "VARCHAR(16) NOT NULL DEFAULT 'private'"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_packs_user_visibility "
+                        "ON context_packs(user_id, visibility)"
+                    )
+                )
+            if "graph_data" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_packs ADD COLUMN graph_data TEXT")
+                )
+            if "vector_index_id" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN vector_index_id VARCHAR(120)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_packs_vector_index_id "
+                        "ON context_packs(vector_index_id)"
+                    )
+                )
+            if "version" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN version "
+                        "INTEGER NOT NULL DEFAULT 1"
+                    )
+                )
+            if "parent_pack_id" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN parent_pack_id INTEGER"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_packs_parent_pack_id "
+                        "ON context_packs(parent_pack_id)"
+                    )
+                )
+            if "usage_count" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN usage_count "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+            if "last_used_at" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_packs ADD COLUMN last_used_at DATETIME"
+                    )
+                )
+
+        # Relax ``project_id`` from NOT NULL to NULLABLE if needed. We
+        # can't do this with ALTER TABLE on SQLite, so we rebuild the
+        # table following the official 12-step procedure (condensed):
+        #   1. begin txn
+        #   2. create ``context_packs_new`` with the desired schema
+        #   3. INSERT INTO ... SELECT * FROM old
+        #   4. drop old, rename new
+        #   5. recreate indexes
+        # Runs at most once — detected by inspecting the live schema.
+        _rebuild_context_packs_if_project_id_not_null()
+
+    # R-PACK-CORE: ContextPackSource grew typed FK columns (project_id,
+    # conversation_id, note_id, attachment_id) + a source_title snapshot.
+    if "context_pack_sources" in table_names:
+        cols = {c["name"] for c in inspector.get_columns("context_pack_sources")}
+        with db.engine.begin() as conn:
+            if "project_id" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_pack_sources ADD COLUMN project_id INTEGER")
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_pack_sources_project_id "
+                        "ON context_pack_sources(project_id)"
+                    )
+                )
+            if "conversation_id" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_pack_sources ADD COLUMN conversation_id INTEGER"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_pack_sources_conversation_id "
+                        "ON context_pack_sources(conversation_id)"
+                    )
+                )
+            if "note_id" not in cols:
+                conn.execute(
+                    text("ALTER TABLE context_pack_sources ADD COLUMN note_id INTEGER")
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_pack_sources_note_id "
+                        "ON context_pack_sources(note_id)"
+                    )
+                )
+            if "attachment_id" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_pack_sources ADD COLUMN attachment_id INTEGER"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "ix_context_pack_sources_attachment_id "
+                        "ON context_pack_sources(attachment_id)"
+                    )
+                )
+            if "source_title" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE context_pack_sources ADD COLUMN source_title VARCHAR(240)"
+                    )
+                )
+        _backfill_context_pack_source_typed_fks()
+
     # R14: copy any existing single-key OpenRouter credential into the new
     # ``provider_credentials`` table so the multi-provider service is the
     # only read path going forward. We keep the legacy column populated
     # for one release as a fallback (see credentials_service.save_key).
     if {"users", "provider_credentials"}.issubset(table_names):
         _migrate_legacy_openrouter_keys()
+
+
+def _rebuild_context_packs_if_project_id_not_null() -> None:
+    """Relax ``context_packs.project_id`` from NOT NULL to NULLABLE.
+
+    SQLite can't ALTER COLUMN nullability, so we follow the official
+    "create new, copy, swap" rebuild pattern. This runs at most once per
+    database — we probe the live schema first and bail if project_id is
+    already nullable.
+
+    We intentionally skip this rebuild on non-SQLite backends; on
+    Postgres / MySQL this is a single ALTER and will be handled by the
+    first real Alembic migration when we get there.
+    """
+    if db.engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(db.engine)
+    cols_info = {c["name"]: c for c in inspector.get_columns("context_packs")}
+    project_col = cols_info.get("project_id")
+    if project_col is None:
+        return
+    # SQLAlchemy inspector reports ``nullable`` accurately for SQLite.
+    if project_col.get("nullable", True):
+        return  # already nullable, nothing to do
+
+    # Build the new table with the same physical schema except:
+    #   * project_id is NULL allowed
+    #   * all R-PACK-CORE columns are included from the start
+    #
+    # We use SQLAlchemy's table metadata instead of hand-rolling the
+    # CREATE TABLE so the column list stays in sync with the model.
+    with db.engine.begin() as conn:
+        # Existing column names (ordered) — we'll copy exactly these over.
+        existing_cols = [c["name"] for c in inspector.get_columns("context_packs")]
+        existing_indexes = inspector.get_indexes("context_packs")
+
+        col_list = ", ".join(existing_cols)
+
+        # Create the replacement table. We re-declare it here explicitly
+        # so the rebuild is self-contained (rather than trusting the
+        # ORM's CREATE TABLE, which might differ if the model changes
+        # further before this migration re-runs).
+        conn.execute(
+            text(
+                """
+                CREATE TABLE context_packs_new (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+                    title VARCHAR(160) NOT NULL DEFAULT 'Context Pack',
+                    description TEXT,
+                    body TEXT NOT NULL DEFAULT '',
+                    summary TEXT,
+                    keywords TEXT,
+                    structured_content TEXT,
+                    source_type VARCHAR(20),
+                    visibility VARCHAR(16) NOT NULL DEFAULT 'private',
+                    graph_data TEXT,
+                    vector_index_id VARCHAR(120),
+                    version INTEGER NOT NULL DEFAULT 1,
+                    parent_pack_id INTEGER REFERENCES context_packs(id) ON DELETE SET NULL,
+                    usage_count INTEGER NOT NULL DEFAULT 0,
+                    last_used_at DATETIME,
+                    model VARCHAR(120),
+                    instructions TEXT,
+                    source_memory_ids TEXT,
+                    memory_count INTEGER NOT NULL DEFAULT 0,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+
+        # Copy every existing row across. We only copy columns that exist
+        # on BOTH sides so the migration survives mid-deploy restarts.
+        new_cols = {
+            "id", "user_id", "project_id", "conversation_id", "title",
+            "description", "body", "summary", "keywords",
+            "structured_content", "source_type", "visibility",
+            "graph_data", "vector_index_id", "version", "parent_pack_id",
+            "usage_count", "last_used_at", "model", "instructions",
+            "source_memory_ids", "memory_count", "prompt_tokens",
+            "completion_tokens", "total_tokens", "created_at", "updated_at",
+        }
+        shared = [c for c in existing_cols if c in new_cols]
+        shared_list = ", ".join(shared)
+        conn.execute(
+            text(
+                f"INSERT INTO context_packs_new ({shared_list}) "
+                f"SELECT {shared_list} FROM context_packs"
+            )
+        )
+
+        conn.execute(text("DROP TABLE context_packs"))
+        conn.execute(
+            text("ALTER TABLE context_packs_new RENAME TO context_packs")
+        )
+
+        # Recreate indexes we know about. We intentionally don't restore
+        # every historical index — the ORM's Index declarations in
+        # context_pack.py will be materialized by the next db.create_all()
+        # call (which is idempotent thanks to IF NOT EXISTS).
+        for idx in existing_indexes:
+            name = idx.get("name")
+            if not name:
+                continue
+            cols = idx.get("column_names") or []
+            if not cols:
+                continue
+            unique = "UNIQUE " if idx.get("unique") else ""
+            conn.execute(
+                text(
+                    f"CREATE {unique}INDEX IF NOT EXISTS {name} "
+                    f"ON context_packs ({', '.join(cols)})"
+                )
+            )
+        # Explicitly ensure the R-PACK-CORE indexes exist even when the
+        # source DB didn't have them at the time of the snapshot.
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_context_packs_user_visibility "
+                "ON context_packs(user_id, visibility)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_context_packs_parent_pack_id "
+                "ON context_packs(parent_pack_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_context_packs_vector_index_id "
+                "ON context_packs(vector_index_id)"
+            )
+        )
+
+
+def _backfill_context_pack_source_typed_fks() -> None:
+    """Populate the new typed FK columns for any pre-existing rows.
+
+    The wrap-up flow before R-PACK-CORE wrote every row with a
+    ``source_type`` + generic ``source_id`` only. After the migration
+    that added ``project_id`` / ``conversation_id`` / ``note_id`` /
+    ``attachment_id``, the historic rows are missing the typed FK.
+    This one-shot pass copies ``source_id`` into the matching column
+    so the new indexed lookups find them.
+
+    Runs every boot but is cheap — it UPDATEs only rows whose typed
+    column is still NULL for their declared type.
+    """
+    with db.engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE context_pack_sources SET project_id = source_id "
+                "WHERE source_type = 'project' AND project_id IS NULL "
+                "AND source_id IS NOT NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE context_pack_sources SET conversation_id = source_id "
+                "WHERE source_type = 'conversation' AND conversation_id IS NULL "
+                "AND source_id IS NOT NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE context_pack_sources SET note_id = source_id "
+                "WHERE source_type = 'note' AND note_id IS NULL "
+                "AND source_id IS NOT NULL"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE context_pack_sources SET attachment_id = source_id "
+                "WHERE source_type = 'attachment' AND attachment_id IS NULL "
+                "AND source_id IS NOT NULL"
+            )
+        )
 
 
 def _migrate_legacy_openrouter_keys() -> None:
