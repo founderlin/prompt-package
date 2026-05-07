@@ -2,18 +2,24 @@
   <div class="shell">
     <SidebarNav />
     <div class="shell__main">
-      <AppHeader />
       <main class="shell__content">
         <RouterView />
       </main>
     </div>
+    <!-- Global top-center toast stack. Mounted once at the shell level so
+         any authenticated route can call `useToasts().push(...)` without
+         each view needing its own host. -->
+    <ToastHost />
   </div>
 </template>
 
 <script setup>
 import { RouterView } from 'vue-router'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
-import AppHeader from '@/components/layout/AppHeader.vue'
+import ToastHost from '@/components/common/ToastHost.vue'
+// AppHeader was removed — the account area now lives at the bottom of the
+// sidebar (see SidebarNav.vue). Removing the 64px top bar gives the chat
+// view and every other page that much more vertical breathing room.
 </script>
 
 <style scoped>

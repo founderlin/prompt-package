@@ -46,6 +46,58 @@
         <span class="nav-item__icon" v-html="item.icon" aria-hidden="true" />
         <span class="nav-item__label">{{ item.label }}</span>
       </RouterLink>
+
+      <!-- User account chip. Replaces the old top AppHeader account menu.
+           Clicking opens a dropdown with the email and Sign out; collapsed
+           sidebar shows just the avatar and the dropdown anchors to it. -->
+      <div
+        v-if="auth.isAuthenticated.value"
+        class="sidebar__user"
+        ref="userMenuRef"
+      >
+        <button
+          type="button"
+          class="nav-item user-trigger"
+          :class="{ 'user-trigger--open': userMenuOpen }"
+          :title="collapsed ? auth.user.value?.email : undefined"
+          :aria-expanded="userMenuOpen"
+          @click="toggleUserMenu"
+        >
+          <span class="nav-item__icon user-avatar" aria-hidden="true">
+            {{ initial }}
+          </span>
+          <span class="nav-item__label user-email">
+            {{ auth.user.value?.email }}
+          </span>
+        </button>
+
+        <div v-if="userMenuOpen" class="user-dropdown" role="menu">
+          <div class="user-dropdown__info">
+            <span class="user-dropdown__info-label">Signed in as</span>
+            <span class="user-dropdown__info-email">
+              {{ auth.user.value?.email }}
+            </span>
+          </div>
+          <hr class="user-dropdown__divider" />
+          <button
+            class="user-dropdown__item user-dropdown__item--danger"
+            type="button"
+            role="menuitem"
+            :disabled="loggingOut"
+            @click="onLogout"
+          >
+            <span class="user-dropdown__icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </span>
+            {{ loggingOut ? 'Signing out…' : 'Sign out' }}
+          </button>
+        </div>
+      </div>
     </nav>
 
     <div class="sidebar__footer">
@@ -82,20 +134,28 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import logoFull from '@/icon2.png'
 import logoMark from '@/icon1.png'
+import { useAuth } from '@/stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const auth = useAuth()
 
 const STORAGE_KEY = 'pp_sidebar_collapsed'
-const collapsed = ref(false)
+// Default to collapsed. This is what first-run users see; their preference
+// is still persisted in localStorage once they toggle it.
+const collapsed = ref(true)
 
 onMounted(() => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw === '1') collapsed.value = true
+    // Explicit '0' means "user chose expanded". Any other value (including
+    // missing) keeps the collapsed default.
+    if (raw === '0') collapsed.value = false
+    else if (raw === '1') collapsed.value = true
   } catch (_e) {
     /* ignore storage errors */
   }
@@ -119,6 +179,8 @@ watch(collapsed, (next) => {
     '--layout-sidebar-w',
     next ? '72px' : '240px'
   )
+  // Close any open menu when the sidebar animates — the anchor moves.
+  userMenuOpen.value = false
 })
 
 function toggle() {
@@ -130,6 +192,57 @@ function isActive(item) {
   if (path === item.to) return true
   return path.startsWith(item.to + '/')
 }
+
+// ---- User menu (bottom of sidebar, replaces the old top AppHeader menu) ----
+
+const userMenuOpen = ref(false)
+const userMenuRef = ref(null)
+const loggingOut = ref(false)
+
+const initial = computed(() => {
+  const e = auth.user.value?.email || ''
+  return e ? e[0].toUpperCase() : '?'
+})
+
+function toggleUserMenu() {
+  userMenuOpen.value = !userMenuOpen.value
+}
+
+function closeUserMenu() {
+  userMenuOpen.value = false
+}
+
+async function onLogout() {
+  loggingOut.value = true
+  try {
+    await auth.logout()
+    closeUserMenu()
+    router.replace({ name: 'login' })
+  } finally {
+    loggingOut.value = false
+  }
+}
+
+function onDocumentClick(event) {
+  if (!userMenuOpen.value) return
+  if (userMenuRef.value && !userMenuRef.value.contains(event.target)) {
+    closeUserMenu()
+  }
+}
+
+function onKeydown(event) {
+  if (event.key === 'Escape') closeUserMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onKeydown)
+})
 
 const ICON_DASHBOARD = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`
 
@@ -310,6 +423,134 @@ const secondaryNav = [
   opacity: 0;
   width: 0;
   pointer-events: none;
+}
+
+/* ---- Account / user chip (replaces old top header menu) ---- */
+.sidebar__user {
+  position: relative;
+  margin-top: 2px;
+}
+
+.user-trigger {
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--color-text-secondary);
+  /* Keep the same rhythm as sibling nav items. */
+  text-align: left;
+}
+
+.user-trigger--open {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.user-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-sm);
+}
+
+/* Dropdown floats to the right of the sidebar so it's readable even when
+   the sidebar is collapsed. Anchored to the bottom-ish of the trigger. */
+.user-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: var(--space-3);
+  right: var(--space-3);
+  min-width: 200px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
+  padding: var(--space-2);
+  z-index: 30;
+}
+
+.sidebar--collapsed .user-dropdown {
+  left: calc(100% + 8px);
+  right: auto;
+  bottom: 0;
+  width: 220px;
+}
+
+.user-dropdown__info {
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.user-dropdown__info-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.user-dropdown__info-email {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.user-dropdown__divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: var(--space-1) 0;
+}
+
+.user-dropdown__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 9px var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.user-dropdown__item:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.user-dropdown__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.user-dropdown__item--danger {
+  color: var(--color-error);
+}
+
+.user-dropdown__item--danger:hover:not(:disabled) {
+  background: var(--color-error-soft);
+}
+
+.user-dropdown__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
 }
 
 /* ---- Footer ---- */

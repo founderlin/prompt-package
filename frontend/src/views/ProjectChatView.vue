@@ -11,6 +11,7 @@ import modelSelectionsApi from '@/api/modelSelections'
 import attachmentsApi from '@/api/attachments'
 import projectsApi from '@/api/projects'
 import { useAuth } from '@/stores/auth'
+import { useToasts } from '@/stores/toasts'
 import { describeApiError } from '@/utils/errors'
 import { relativeTime } from '@/utils/time'
 import {
@@ -40,6 +41,7 @@ const props = defineProps({
 const route = useRoute()
 const router = useRouter()
 const auth = useAuth()
+const toasts = useToasts()
 
 const state = ref('loading')
 const errorMessage = ref('')
@@ -52,6 +54,11 @@ const sendError = ref('')
 // only while a request is pending so the Stop button can call .abort().
 const sendAbortController = ref(null)
 const composer = ref(null)
+// Set to true right before we call router.replace() to attach the newly
+// created conversation id to the URL. The route watcher reads & resets this
+// so it knows to skip the re-bootstrap that would otherwise race with any
+// in-flight send and produce duplicate message bubbles.
+const suppressNextRouteBootstrap = ref(false)
 
 const conversations = ref([])
 const conversationsLoading = ref(false)
@@ -213,6 +220,11 @@ async function bootstrap() {
       conversation.value = convo
       messages.value = convo?.messages || []
       applyConversationModel(convo?.model, convo?.provider)
+      // We just created a fresh conversation. Push its id into the URL, but
+      // flag the watcher so it doesn't re-run bootstrap() in response to the
+      // route change we are about to trigger ourselves — doing so would race
+      // with any in-flight send and cause duplicate message bubbles.
+      suppressNextRouteBootstrap.value = true
       router.replace({
         name: 'project-chat',
         params: { id: String(projectIdNum.value), cid: String(convo.id) }
@@ -566,9 +578,37 @@ async function handleSubmit(content) {
       attachmentIds,
       signal: controller?.signal
     })
-    messages.value = messages.value.filter((m) => m !== tempUserMsg)
-    if (data?.user_message) messages.value.push(data.user_message)
-    if (data?.assistant_message) messages.value.push(data.assistant_message)
+    // Replace the optimistic temp bubble with the authoritative pair from
+    // the server. Rebuild in one pass so that (a) the temp is definitely
+    // gone regardless of whether its object identity survived reactivity
+    // wrapping, and (b) we dedupe by `id` in case a concurrent refetch
+    // (e.g. from a route change) already pushed the same message in.
+    const seenIds = new Set()
+    const next = []
+    for (const m of messages.value) {
+      if (m === tempUserMsg) continue
+      if (m?._tempId && m._tempId === tempUserMsg._tempId) continue
+      if (m?.id != null) {
+        if (seenIds.has(m.id)) continue
+        seenIds.add(m.id)
+      }
+      next.push(m)
+    }
+    if (data?.user_message) {
+      const id = data.user_message.id
+      if (id == null || !seenIds.has(id)) {
+        if (id != null) seenIds.add(id)
+        next.push(data.user_message)
+      }
+    }
+    if (data?.assistant_message) {
+      const id = data.assistant_message.id
+      if (id == null || !seenIds.has(id)) {
+        if (id != null) seenIds.add(id)
+        next.push(data.assistant_message)
+      }
+    }
+    messages.value = next
     if (data?.conversation) {
       conversation.value = { ...conversation.value, ...data.conversation }
       applyConversationModel(
@@ -927,7 +967,6 @@ async function handleWrapUp() {
   }
   summarizing.value = true
   summarizeError.value = ''
-  summarizeBanner.value = ''
   try {
     const data = await chatApi.summarizeConversation(conversation.value.id, {
       model: selectedModel.value || DEFAULT_MODEL_ID
@@ -937,10 +976,27 @@ async function handleWrapUp() {
     }
     const items = Array.isArray(data?.memories) ? data.memories : []
     memoriesList.value = items
-    memoriesOpen.value = items.length > 0
-    summarizeBanner.value = items.length
-      ? `Wrap-up complete · ${items.length} ${items.length === 1 ? 'memory' : 'memories'} saved.`
+    // The old inline summary-panel was removed — feedback is now delivered
+    // via a top-center toast. The toast carries a link that jumps the user
+    // to the project page's memories section (anchor: #project-memories),
+    // which is the single source of truth for extracted memories.
+    const count = items.length
+    const message = count
+      ? `Wrap-up complete · ${count} ${count === 1 ? 'memory' : 'memories'} saved.`
       : 'Wrap-up complete, but the model did not extract any memories.'
+    toasts.push({
+      kind: 'success',
+      message,
+      link:
+        count && project.value
+          ? {
+              name: 'project-detail',
+              params: { id: String(project.value.id) },
+              hash: '#project-memories'
+            }
+          : null,
+      linkText: count ? 'View memories' : ''
+    })
     loadConversations()
   } catch (err) {
     summarizeError.value = describeApiError(
@@ -1135,6 +1191,14 @@ watch(
   () => [route.params.id, route.params.cid],
   ([nextId, nextCid], [prevId, prevCid]) => {
     if (nextId !== prevId || nextCid !== prevCid) {
+      // When we ourselves called router.replace() to attach the freshly
+      // created conversation id to the URL, skip the re-bootstrap. Running
+      // bootstrap() again here would refetch messages mid-send and produce
+      // duplicated user/assistant bubbles.
+      if (suppressNextRouteBootstrap.value) {
+        suppressNextRouteBootstrap.value = false
+        return
+      }
       bootstrap()
     }
   }
@@ -1160,25 +1224,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-view">
-    <RouterLink
-      :to="{ name: 'project-detail', params: { id: String(projectIdNum) } }"
-      class="back-link"
-    >
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <polyline points="15 18 9 12 15 6" />
-      </svg>
-      <span v-if="project">Back to {{ project.name }}</span>
-      <span v-else>Back to project</span>
-    </RouterLink>
+    <!-- The old "< Back to {project}" link used to live here. It was
+         removed — users now navigate back by clicking the project name
+         at the top of the chat-sidebar ("MY CONTEXT / {project name}"). -->
 
     <div v-if="state === 'loading'" class="state-card">
       <span class="spinner" aria-hidden="true" />
@@ -1208,20 +1256,57 @@ onBeforeUnmount(() => {
 
     <div v-else class="chat-layout">
       <aside class="chat-sidebar card">
+        <!-- Sidebar header matches the "MY CONTEXT / Blablas / New"
+             design: a small uppercase breadcrumb on top that doubles as
+             the back-link to the project page (replaces the removed
+             "< Back to project" button), the "Blablas" title, and the
+             action buttons on the right. -->
         <header class="chat-sidebar__header">
-          <div>
-            <p class="chat-sidebar__breadcrumb">{{ project?.name }}</p>
+          <div class="chat-sidebar__titles">
+            <RouterLink
+              :to="{ name: 'project-detail', params: { id: String(projectIdNum) } }"
+              class="chat-sidebar__breadcrumb"
+              :title="project?.name ? `Back to ${project.name}` : 'Back to project'"
+            >
+              MY CONTEXT
+            </RouterLink>
             <h2 class="chat-sidebar__title">Blablas</h2>
           </div>
-          <button
-            class="btn btn--primary btn--sm"
-            type="button"
-            :disabled="creatingNew"
-            @click="startNewConversation"
-          >
-            <span v-if="creatingNew" class="spinner" aria-hidden="true" />
-            <span>New</span>
-          </button>
+          <div class="chat-sidebar__actions">
+            <button
+              class="btn btn--primary btn--sm"
+              type="button"
+              :disabled="creatingNew"
+              @click="startNewConversation"
+            >
+              <span v-if="creatingNew" class="spinner" aria-hidden="true" />
+              <span>New</span>
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              :disabled="!canSummarize || summarizing || sending"
+              :title="
+                !canSummarize
+                  ? 'Send at least one user/assistant exchange first'
+                  : conversation?.summarized_at
+                    ? 'Re-summarize this blabla'
+                    : 'Summarize this blabla and extract memories'
+              "
+              @click="handleWrapUp"
+            >
+              <span v-if="summarizing" class="spinner" aria-hidden="true" />
+              <span>
+                {{
+                  summarizing
+                    ? 'Wrapping…'
+                    : conversation?.summarized_at
+                      ? 'Re-wrap'
+                      : 'Wrap'
+                }}
+              </span>
+            </button>
+          </div>
         </header>
 
         <div v-if="conversationsLoading && !conversations.length" class="chat-sidebar__loading">
@@ -1305,108 +1390,12 @@ onBeforeUnmount(() => {
       </aside>
 
       <section class="chat-shell card">
-        <header class="chat-header">
-          <div class="chat-header__title-block">
-            <p class="chat-header__breadcrumb">{{ headerSubtitle }}</p>
-            <h1 class="chat-header__title">{{ headerTitle }}</h1>
-          </div>
-          <div class="chat-header__controls">
-            <div class="prompt-plus" :class="{ 'prompt-plus--active': attachedPack }">
-              <span class="prompt-plus__label">Prompt+</span>
-              <button
-                v-if="attachedPack"
-                type="button"
-                class="prompt-plus__chip"
-                :title="`Attached Context Pack: ${attachedPack.title}`"
-                :disabled="sending"
-                @click="openPackPicker"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                </svg>
-                <span class="prompt-plus__title">{{ attachedPack.title }}</span>
-                <span class="prompt-plus__caret" aria-hidden="true">▾</span>
-              </button>
-              <button
-                v-else
-                type="button"
-                class="prompt-plus__add"
-                :disabled="sending"
-                @click="openPackPicker"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                <span>Add Context Pack</span>
-              </button>
-              <button
-                v-if="attachedPack"
-                type="button"
-                class="prompt-plus__remove"
-                title="Remove Context Pack from this blabla"
-                :disabled="detachingPack || sending"
-                @click="clearAttachedPack"
-              >
-                <span v-if="detachingPack" class="spinner" aria-hidden="true" />
-                <span v-else aria-hidden="true">×</span>
-                <span class="visually-hidden">Remove pack</span>
-              </button>
-            </div>
-            <button
-              class="btn btn--ghost btn--sm"
-              type="button"
-              :disabled="!canSummarize || summarizing || sending"
-              :title="
-                !canSummarize
-                  ? 'Send at least one user/assistant exchange first'
-                  : conversation?.summarized_at
-                    ? 'Re-summarize this blabla'
-                    : 'Summarize this blabla and extract memories'
-              "
-              @click="handleWrapUp"
-            >
-              <span v-if="summarizing" class="spinner" aria-hidden="true" />
-              <span>
-                {{
-                  summarizing
-                    ? 'Wrapping up…'
-                    : conversation?.summarized_at
-                      ? 'Re-wrap up'
-                      : 'Wrap up'
-                }}
-              </span>
-            </button>
-            <button
-              class="btn btn--ghost btn--sm"
-              type="button"
-              :disabled="sending || summarizing || !conversation"
-              @click="handleDeleteConversation"
-            >
-              Delete chat
-            </button>
-          </div>
-        </header>
+        <!-- The old chat-header (project breadcrumb + title + Prompt+ / Wrap up
+             / Delete chat controls) was removed to maximize the vertical
+             space of the conversation area. Conversation-level actions
+             (New, Wrap up, Delete chat) now live in the left sidebar
+             header. Project/conversation title is still available via the
+             left sidebar list (active row) and the browser tab title. -->
 
         <div
           v-if="!hasKeyForSelectedProvider"
@@ -1439,76 +1428,12 @@ onBeforeUnmount(() => {
           <span>{{ summarizeError }}</span>
         </div>
 
-        <div v-if="summarizeBanner" class="banner banner--success" role="status">
-          <span>{{ summarizeBanner }}</span>
-        </div>
-
-        <section
-          v-if="conversation?.summary || memoriesList.length"
-          class="summary-panel"
-        >
-          <header class="summary-panel__header">
-            <div class="summary-panel__heading">
-              <span class="summary-panel__chip">Summary</span>
-              <span
-                v-if="conversation?.summarized_at"
-                class="summary-panel__time"
-              >
-                · {{ relativeTime(conversation.summarized_at) }}
-              </span>
-            </div>
-            <button
-              v-if="memoriesList.length"
-              type="button"
-              class="btn btn--ghost btn--sm"
-              @click="memoriesOpen = !memoriesOpen"
-            >
-              {{ memoriesOpen ? 'Hide' : 'Show' }}
-              {{ memoriesList.length }}
-              {{ memoriesList.length === 1 ? 'memory' : 'memories' }}
-            </button>
-          </header>
-
-          <p v-if="conversation?.summary" class="summary-panel__text">
-            {{ conversation.summary }}
-          </p>
-          <p v-else class="summary-panel__text text-secondary">
-            No summary text — see extracted memories below.
-          </p>
-
-          <div
-            v-if="memoriesOpen && groupedMemories.length"
-            class="summary-panel__groups"
-          >
-            <div
-              v-for="group in groupedMemories"
-              :key="group.kind"
-              class="summary-panel__group"
-            >
-              <h3 class="summary-panel__group-title">
-                {{ group.label }}
-                <span class="summary-panel__group-count">
-                  {{ group.items.length }}
-                </span>
-              </h3>
-              <ul class="summary-panel__list">
-                <li
-                  v-for="item in group.items"
-                  :key="item.id"
-                  class="summary-panel__item"
-                >
-                  <p class="summary-panel__item-content">{{ item.content }}</p>
-                  <p
-                    v-if="item.source_excerpt"
-                    class="summary-panel__item-excerpt"
-                  >
-                    “{{ item.source_excerpt }}”
-                  </p>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </section>
+        <!-- The old blue "Wrap-up complete" success banner and the inline
+             .summary-panel (with SUMMARY chip, memories grouped by kind)
+             used to live here. They were removed in favor of a top-center
+             toast notification (see handleWrapUp + ToastHost.vue). The
+             canonical place to browse extracted memories is now the
+             project detail page (#project-memories anchor). -->
 
         <MessageList
           :messages="messages"
@@ -1699,8 +1624,17 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-3);
   /* Lock the whole chat route to the viewport so the composer stays
-     pinned to the bottom and only the message list scrolls. */
-  height: calc(100vh - var(--layout-header-h) - var(--space-4));
+     pinned to the bottom and only the message list scrolls.
+     AppShell wraps us in .shell__content with `padding: 32px 32px 48px`
+     (= --space-6 top, --space-7 bottom). We must subtract those so the
+     chat view doesn't overflow past the visible area and push the
+     composer below the fold. */
+  height: calc(
+    100vh
+    - var(--layout-header-h)
+    - var(--space-6) /* shell__content top padding */
+    - var(--space-7) /* shell__content bottom padding */
+  );
   min-height: 0;
 }
 
@@ -1930,10 +1864,24 @@ onBeforeUnmount(() => {
 .chat-layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  /* Conversation list moved to the RIGHT; main chat area takes the
+     remaining space on the left/center. DOM order is kept as-is
+     (sidebar first, shell second) for accessibility / tab order, and
+     we use grid-template-areas + named areas to swap the visual
+     positions without re-ordering the markup. */
+  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-areas: 'main side';
   gap: var(--space-4);
   min-height: 0;
   align-items: stretch;
+}
+
+.chat-sidebar {
+  grid-area: side;
+}
+
+.chat-shell {
+  grid-area: main;
 }
 
 .chat-sidebar {
@@ -1953,12 +1901,43 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--color-border);
 }
 
+/* Left half of the header: stacked breadcrumb + title. */
+.chat-sidebar__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Two action buttons ("New", "Wrap") stacked on the right side of the
+   header. flex-wrap handles very narrow sidebars gracefully. */
+.chat-sidebar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* Breadcrumb doubles as the "back to project" link; style it so the
+   clickability reads (hover underline + primary color) without making
+   it look like a regular body link. */
 .chat-sidebar__breadcrumb {
   margin: 0;
   font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--color-text-muted);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.chat-sidebar__breadcrumb:hover,
+.chat-sidebar__breadcrumb:focus-visible {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .chat-sidebar__title {
@@ -2142,6 +2121,12 @@ onBeforeUnmount(() => {
 @media (max-width: 960px) {
   .chat-layout {
     grid-template-columns: 1fr;
+    /* On narrow screens stack the conversation list above the chat
+       shell — tapping a conversation is easier at the top of the
+       screen than hidden to the right. */
+    grid-template-areas:
+      'side'
+      'main';
   }
   .chat-sidebar {
     min-height: auto;

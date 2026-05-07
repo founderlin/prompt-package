@@ -64,7 +64,10 @@
 
   /* ----- layout ----- */
   --layout-sidebar-w: 240px;
-  --layout-header-h: 64px;
+  /* AppHeader was removed from AppShell — kept at 0 so any `calc()` that
+     still subtracts it (e.g. ProjectChatView's .chat-layout height) keeps
+     working without needing to be rewritten. */
+  --layout-header-h: 0px;
   --layout-content-max: 1440px;
 }
 

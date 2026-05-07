@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import apiClient from '@/api/client'
 import attachmentsApi from '@/api/attachments'
 import { modelLabel } from '@/constants/models'
-import { renderMarkdown, decodeCopyPayload } from '@/utils/markdown'
+import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -579,16 +579,29 @@ const codeCopyFeedback = ref(new WeakMap())
 const codeCopyFeedbackBumper = ref(0) // force-recompute tooltips/labels
 
 function onContentClick(event) {
-  // Use event delegation so dynamically rendered code-block copy buttons
-  // work without per-block refs. Each copy button carries `data-copy-code`
-  // and its enclosing `.md-codeblock` has the original source base64-
-  // encoded in `data-code`.
+  // Event delegation: the copy button sits inside the v-html'd markdown
+  // tree, so we catch the click here on the container. Each copy button
+  // is tagged with `data-copy-code`; when we find one, we walk up to its
+  // enclosing `.md-codeblock` and read the visible source straight out
+  // of the rendered <code> element's textContent.
+  //
+  // Why textContent instead of a pre-baked attribute? It guarantees
+  // "what you see in this block is exactly what gets copied" — no risk
+  // of the copy payload diverging from what's visible (which could
+  // previously happen if marked grouped content unexpectedly, or if
+  // the data-code attribute got altered/overwritten by sanitization).
   const btn = event.target?.closest?.('[data-copy-code]')
   if (!btn) return
   event.preventDefault()
   event.stopPropagation()
   const block = btn.closest('.md-codeblock')
-  const raw = decodeCopyPayload(block?.getAttribute('data-code'))
+  const codeEl = block?.querySelector('pre code')
+  // Use innerText so visual line breaks are preserved (textContent
+  // collapses them in some rendering paths). Fallback to textContent
+  // for older engines where innerText isn't defined on <code>.
+  const raw = codeEl
+    ? (typeof codeEl.innerText === 'string' ? codeEl.innerText : codeEl.textContent) || ''
+    : ''
   if (!raw) return
 
   const finish = () => {
@@ -612,8 +625,14 @@ function onContentClick(event) {
     finish()
   }
 
-  // Also fire the public copy event so parents that care can log it.
-  emit('copy', { ...props.message, _codeOnly: true, _codeContent: raw })
+  // NOTE: do NOT `emit('copy', ...)` here. The parent's copy handler
+  // (see ProjectChatView.handleCopyMessage) unconditionally writes
+  // `msg.content` — i.e. the full assistant reply — to the clipboard,
+  // which would race with and OVERWRITE the code-block copy we just
+  // performed above. That was the "copy copies the whole conversation"
+  // bug. Code-block copies are strictly a local UI action; the parent
+  // doesn't need to know about them. Only the message-level Copy button
+  // (`onCopyClick`) should emit 'copy'.
 
   // Suppress unused-local warnings from older editors.
   void codeCopyFeedback.value

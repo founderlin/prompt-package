@@ -195,7 +195,11 @@
         </EmptyState>
       </section>
 
-      <section class="card">
+      <!-- Anchor target so external pages (e.g. the wrap-up toast fired
+           from ProjectChatView) can deep-link here via `#project-memories`.
+           See the focusMemoriesHash() helper + route-hash watcher in this
+           file's <script setup>. -->
+      <section id="project-memories" class="card">
         <header class="section-row">
           <div>
             <h3 class="card__title card__title--sm">Memories</h3>
@@ -502,7 +506,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ProjectFormDialog from '@/components/projects/ProjectFormDialog.vue'
@@ -763,7 +767,13 @@ async function onDelete() {
   }
 }
 
-onMounted(loadProject)
+onMounted(async () => {
+  await loadProject()
+  // Honor `#project-memories` deep-links (fired e.g. by the wrap-up toast
+  // from ProjectChatView). We do this *after* loadProject resolves so the
+  // target element is in the DOM by the time we call scrollIntoView.
+  focusHash(route.hash)
+})
 
 watch(
   () => route.params.id,
@@ -771,6 +781,27 @@ watch(
     if (next && next !== prev) loadProject()
   }
 )
+
+// If the user is already on this page and the hash changes (e.g. same
+// route, different anchor) scroll to the new target without a reload.
+watch(
+  () => route.hash,
+  (next) => focusHash(next)
+)
+
+// Scroll a hash target into view. No-ops for unknown / empty hashes.
+// Uses nextTick so v-if-gated sections (like the memories list once it
+// finishes loading) are rendered before we look them up.
+async function focusHash(hash) {
+  if (!hash) return
+  const id = String(hash).replace(/^#/, '')
+  if (!id) return
+  await nextTick()
+  const el = document.getElementById(id)
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
 </script>
 
 <style scoped>
