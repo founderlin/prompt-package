@@ -12,6 +12,10 @@
 ### Overview
 **Prompt Package** is an AI project memory tool designed for individual users of OpenRouter, DeepSeek, and OpenAI. It turns transient AI conversations into a reusable knowledge base. By summarizing chats, creating hand-written notes, and generating "Context Packs," it ensures your next AI session starts exactly where the last one left off.
 
+### Deployment & Availability
+- **Live Demo**: Currently deployed on Alibaba Cloud at [http://139.196.44.96](http://139.196.44.96/). 
+- **Note on Models**: Models from OpenAI, Google, and Anthropic are not available on the cloud instance. To use these models, you must deploy the project locally and access them through a local VPN.
+
 ### What's New
 - **Wrap Up**: Summarize individual chats or entire projects into a single Context Pack.
 - **Context Zoo**: A central hub to browse, search, and manage all your context assets in a responsive grid.
