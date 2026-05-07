@@ -73,8 +73,12 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
 
 # tini as PID 1 → clean signal handling, no zombie processes.
 # gunicorn args:
-#   -w 4                     : 4 worker processes (SQLite writes serialize,
-#                              but reads benefit from parallelism).
+#   -w 2                     : 2 worker processes. Small VMs (<= 1 GB RAM)
+#                              can't afford 4 workers once each loads SQLAlchemy,
+#                              LLM SDKs, and Flask blueprints (~120 MB RSS each);
+#                              OOM-killer takes the box down. 2 workers leaves
+#                              headroom for nginx + docker daemon + buff/cache.
+#                              Bump to 4 only on >= 2 GB RAM hosts.
 #   --timeout 120            : chat_completion can take ~60s on big prompts.
 #   --access-logfile -       : logs to stdout so `docker logs` shows them.
 #   --graceful-timeout 30    : give in-flight LLM calls time to finish.
@@ -89,7 +93,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
 # because it looks up ``create_app`` on the package and calls it.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["gunicorn", \
-     "-w", "4", \
+     "-w", "2", \
      "-b", "0.0.0.0:5001", \
      "--timeout", "120", \
      "--graceful-timeout", "30", \
