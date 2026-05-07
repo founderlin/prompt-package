@@ -13,7 +13,7 @@
 **Prompt Package** is an AI project memory tool designed for individual users of OpenRouter, DeepSeek, and OpenAI. It turns transient AI conversations into a reusable knowledge base. By summarizing chats, creating hand-written notes, and generating "Context Packs," it ensures your next AI session starts exactly where the last one left off.
 
 ### Deployment & Availability
-- **Live Demo**: Currently deployed on Alibaba Cloud at [http://47.251.9.12](http://47.251.9.12/).
+- **Live Demo**: Try it online at **[prompt-p.cc](http://prompt-p.cc/)** — no signup tricks, just register and start building your project memory.
 - **Global Model Access**: The cloud instance is hosted on an overseas node, so models from OpenAI, Google (Gemini), and Anthropic (Claude) — as well as OpenRouter and DeepSeek — all work directly in the browser without a VPN.
 
 ### What's New
@@ -99,7 +99,7 @@ Want Postgres instead of the bundled SQLite? Add a `db` service to
 **Prompt Package** 是一款面向 OpenRouter、DeepSeek 和 OpenAI 个人用户的 AI 项目记忆工具。它将零散的 AI 对话转化为可复用的项目知识库。通过自动摘要、手动记录（Bla Note）以及生成“Context Pack”，它能确保您的下一次 AI 会话能够无缝承接上一次的进度。
 
 ### 部署与可用性
-- **线上演示**：已部署在阿里云海外节点，访问地址 [http://47.251.9.12](http://47.251.9.12/)。
+- **线上演示**：访问 **[prompt-p.cc](http://prompt-p.cc/)** 直接体验，注册账号即可开始构建您的项目知识库。
 - **海外模型直连**：由于实例部署在海外节点，OpenAI、Google（Gemini）、Anthropic（Claude）以及 OpenRouter、DeepSeek 的模型均可在网页中直接使用，**无需 VPN**。
 
 ### 最新功能
@@ -129,7 +129,7 @@ Want Postgres instead of the bundled SQLite? Add a `db` service to
 **Prompt Package** ist ein KI-Projekt-Gedächtnistool für Einzelnutzer von OpenRouter, DeepSeek und OpenAI. Es verwandelt flüchtige KI-Gespräche in eine wiederverwendbare Wissensdatenbank. Durch Zusammenfassungen, manuelle Notizen (Bla Note) und die Erstellung von „Context Packs“ stellt es sicher, dass Ihre nächste KI-Sitzung genau dort fortgesetzt wird, wo die letzte aufgehört hat.
 
 ### Bereitstellung & Verfügbarkeit
-- **Live-Demo**: Derzeit auf einem Alibaba-Cloud-Server außerhalb Chinas unter [http://47.251.9.12](http://47.251.9.12/) verfügbar.
+- **Live-Demo**: Online ausprobieren unter **[prompt-p.cc](http://prompt-p.cc/)** — einfach registrieren und sofort loslegen.
 - **Globaler Modellzugriff**: Da die Instanz auf einem Übersee-Knoten läuft, funktionieren Modelle von OpenAI, Google (Gemini) und Anthropic (Claude) — sowie OpenRouter und DeepSeek — direkt im Browser, **ohne VPN**.
 
 ### Neue Funktionen
