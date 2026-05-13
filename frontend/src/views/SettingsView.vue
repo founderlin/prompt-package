@@ -2,7 +2,7 @@
   <div class="settings-view">
     <PageHeader
       title="Settings"
-      description="Configure your account, your LLM provider keys, and privacy preferences."
+      description="Manage your account, API keys, chat models, and wrap defaults."
     />
 
     <section class="card">
@@ -29,11 +29,19 @@
       </div>
     </section>
 
-    <section class="card">
-      <h3 class="card__title card__title--sm">LLM provider keys</h3>
-      <p class="text-secondary" style="margin: 0 0 var(--space-3)">
-        Bring your own keys. Configure one or more — every blabla
-        picks its provider from the model dropdown.
+    <!-- ====================================================================
+         1. API keys
+         Provider credentials. Independent from the model-picker rows below
+         so the user can swap keys without re-curating chat or wrap models.
+         ==================================================================== -->
+    <section class="card settings-section">
+      <header class="settings-section__head">
+        <h3 class="card__title card__title--sm">API keys</h3>
+        <span class="settings-section__badge">Step 1</span>
+      </header>
+      <p class="text-secondary settings-section__hint">
+        Bring your own keys. Add one or more provider credentials —
+        Chat and Wrap models below depend on having at least one key.
       </p>
 
       <div v-if="loadingProviders" class="provider-cards__loading">
@@ -53,12 +61,19 @@
       </div>
     </section>
 
-    <section class="card">
-      <h3 class="card__title card__title--sm">Available models</h3>
-      <p class="text-secondary" style="margin: 0 0 var(--space-3)">
-        Pick the models you want to see in the chat's model picker. Each
-        provider is independent — you can enable several from OpenRouter,
-        DeepSeek, and OpenAI at the same time.
+    <!-- ====================================================================
+         2. Chat models
+         Curates the model picker that shows up in the chat composer.
+         ==================================================================== -->
+    <section class="card settings-section">
+      <header class="settings-section__head">
+        <h3 class="card__title card__title--sm">Chat models</h3>
+        <span class="settings-section__badge">Step 2</span>
+      </header>
+      <p class="text-secondary settings-section__hint">
+        Pick the models you want to see in the chat composer's model
+        picker. Each provider is independent — you can enable several
+        from OpenRouter, DeepSeek, and OpenAI at the same time.
       </p>
 
       <div v-if="loadingProviders || loadingModels" class="provider-cards__loading">
@@ -88,6 +103,54 @@
       </div>
     </section>
 
+    <!-- ====================================================================
+         3. Wrap model
+         A small fast/cheap catalog dedicated to wrap generation. The
+         picker here is the *default* surfaced by Quick / Advanced wrap
+         dialogs and by Routine Wrap's ``use-global-default``.
+         ==================================================================== -->
+    <section class="card settings-section">
+      <header class="settings-section__head">
+        <h3 class="card__title card__title--sm">Wrap model</h3>
+        <span class="settings-section__badge">Step 3</span>
+      </header>
+      <p class="text-secondary settings-section__hint">
+        The default model used when you wrap a conversation into a
+        Markdown memory file. You can still override it per-wrap from
+        the Advanced dialog.
+      </p>
+
+      <div class="wrap-model-list" role="radiogroup" aria-label="Default wrap model">
+        <label
+          v-for="opt in WRAP_MODELS"
+          :key="opt.id"
+          class="wrap-model-option"
+          :class="{ 'wrap-model-option--active': defaultWrapModel === opt.id }"
+        >
+          <input
+            type="radio"
+            name="default-wrap-model"
+            :value="opt.id"
+            :checked="defaultWrapModel === opt.id"
+            @change="onWrapModelChange(opt.id)"
+          />
+          <div class="wrap-model-option__text">
+            <span class="wrap-model-option__label">{{ opt.label }}</span>
+            <span class="wrap-model-option__hint">{{ opt.hint }}</span>
+          </div>
+          <code class="wrap-model-option__id">{{ opt.id }}</code>
+        </label>
+      </div>
+
+      <p
+        v-if="wrapModelSaved"
+        class="settings-section__feedback"
+        role="status"
+      >
+        Default wrap model updated.
+      </p>
+    </section>
+
     <section class="card">
       <h3 class="card__title card__title--sm">Danger zone</h3>
       <p class="text-secondary" style="margin: 0 0 var(--space-3)">
@@ -109,6 +172,11 @@ import modelSelectionsApi from '@/api/modelSelections'
 import { useAuth } from '@/stores/auth'
 import { describeApiError } from '@/utils/errors'
 import { formatDateTime } from '@/utils/time'
+import {
+  WRAP_MODELS,
+  getDefaultWrapModel,
+  setDefaultWrapModel
+} from '@/utils/wrapModelPref'
 
 const router = useRouter()
 const auth = useAuth()
@@ -127,6 +195,25 @@ const loadError = ref(null)
 
 const modelsByProvider = ref({})
 const loadingModels = ref(true)
+
+// Default wrap model — frontend-only preference, read once on mount.
+const defaultWrapModel = ref(getDefaultWrapModel())
+const wrapModelSaved = ref(false)
+let wrapModelSavedTimer = null
+
+function onWrapModelChange(next) {
+  if (!next || next === defaultWrapModel.value) return
+  if (!setDefaultWrapModel(next)) return
+  defaultWrapModel.value = next
+  // Brief confirmation that the change took effect — the storage
+  // write is synchronous so we can flash the feedback immediately.
+  wrapModelSaved.value = true
+  if (wrapModelSavedTimer) clearTimeout(wrapModelSavedTimer)
+  wrapModelSavedTimer = setTimeout(() => {
+    wrapModelSaved.value = false
+    wrapModelSavedTimer = null
+  }, 1800)
+}
 
 const configuredProviders = computed(() =>
   providers.value.filter((p) => statuses.value[p.id]?.configured)
@@ -281,6 +368,106 @@ onMounted(async () => {
   background: var(--color-surface-muted);
   border-style: dashed;
   color: var(--color-text-secondary);
+}
+
+/* Section frame shared by the three "model"-flavored cards. The badge
+   gives the user a sense of "do these in order" without prescribing a
+   wizard layout. */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.settings-section__badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+}
+
+.settings-section__hint {
+  margin: 0 0 var(--space-3);
+}
+
+.settings-section__feedback {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+/* Wrap model radio list. Same row affordance as ProviderKeyCard so the
+   three "model" cards visually rhyme. */
+.wrap-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.wrap-model-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.wrap-model-option:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-muted);
+}
+
+.wrap-model-option--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.wrap-model-option input[type='radio'] {
+  flex-shrink: 0;
+}
+
+.wrap-model-option__text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wrap-model-option__label {
+  font-weight: 500;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.wrap-model-option__hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.wrap-model-option__id {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
 
 @media (max-width: 560px) {

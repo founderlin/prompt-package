@@ -31,7 +31,7 @@ from app.services.bla_note_service import (
     resolve_notes_for_user,
 )
 from app.services.credentials_service import CredentialsError, get_decrypted_key_for
-from app.services.llm_service import LLMError, chat_completion
+from app.services.llm_service import LLMError, chat_completion, chat_completion_stream
 from app.services.project_service import ProjectError, get_for_user as get_project_for_user
 
 DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -611,6 +611,167 @@ def send_user_message(
     return user_msg, assistant_msg, convo
 
 
+def send_user_message_stream(
+    user: User,
+    conversation_id: int,
+    *,
+    content: str,
+    model: str | None = None,
+    provider: str | None = None,
+    attachment_ids: list[int] | None = None,
+    context_items: list[dict] | None = None,
+):
+    """Streaming sibling of :func:`send_user_message`.
+
+    Behaves the same way for persistence (commits the user message
+    first, commits the assistant message after the LLM finishes), but
+    yields incremental events the route layer can forward to the
+    browser as Server-Sent Events:
+
+    * ``("user_message", <Message dict>)`` — emitted once, right after
+      the user message is committed (so the frontend can replace its
+      optimistic bubble immediately).
+    * ``("delta", "text chunk")`` — every assistant token chunk.
+    * ``("assistant_message", <Message dict>)`` — emitted once when
+      the assistant row has been persisted with the final content +
+      usage metrics.
+    * ``("conversation", <Conversation dict>)`` — emitted once at the
+      very end so the sidebar can update ``last_message_at``.
+
+    Errors raise :class:`ChatError` (validation / no key) or LLM-side
+    :class:`LLMError` (re-wrapped). The caller is expected to surface
+    those as an SSE ``error`` event before closing the stream.
+    """
+    convo = get_conversation_for_user(user, conversation_id)
+
+    chosen_provider = _normalize_chat_provider(
+        provider if provider is not None else convo.provider
+    )
+
+    try:
+        api_key = get_decrypted_key_for(user, chosen_provider)
+    except CredentialsError as err:
+        raise ChatError(err.code, err.message, status=err.status) from err
+    if not api_key:
+        raise ChatError(
+            "no_api_key",
+            _PROVIDER_KEY_HINT.get(
+                chosen_provider,
+                f"Add your {get_provider(chosen_provider).label} API key in Settings before chatting.",
+            ),
+            status=400,
+        )
+
+    cleaned = _normalize_content(content)
+    chosen_model = _normalize_model(model or convo.model)
+
+    attachments: list[Attachment] = resolve_user_attachments(
+        user, convo.id, attachment_ids or []
+    )
+
+    normalized_items = _normalize_context_items(context_items)
+    note_items = [it for it in normalized_items if it["type"] == "bla_note"]
+    note_ids = [it["id"] for it in note_items]
+    try:
+        context_notes = resolve_notes_for_user(
+            user, convo.project_id, note_ids
+        ) if note_ids else []
+    except BlaNoteError as err:
+        raise ChatError(err.code, err.message, status=err.status) from err
+
+    persisted_items = []
+    by_id = {n.id: n for n in context_notes}
+    for it in normalized_items:
+        if it["type"] == "bla_note":
+            note = by_id.get(it["id"])
+            if note is None:
+                continue
+            persisted_items.append({
+                "type": "bla_note", "id": note.id, "title": note.title,
+            })
+        else:
+            persisted_items.append(dict(it))
+
+    history = list(convo.messages.order_by(Message.id.asc()).all())
+
+    user_msg = Message(
+        conversation_id=convo.id, role="user", content=cleaned,
+        model=chosen_model, provider=chosen_provider,
+    )
+    if persisted_items:
+        user_msg.set_context_metadata({"context_items": persisted_items})
+    db.session.add(user_msg)
+
+    if not convo.title:
+        convo.title = _derive_title(cleaned)
+    convo.model = chosen_model
+    convo.provider = chosen_provider
+    convo.last_message_at = _utcnow()
+    db.session.add(convo)
+    db.session.commit()
+
+    if attachments:
+        try:
+            attach_to_message(attachments, user_msg)
+        except Exception:
+            db.session.rollback()
+
+    db.session.refresh(user_msg)
+
+    # Tell the client what got persisted before the LLM stream begins.
+    # The frontend uses this to swap its optimistic bubble out as soon
+    # as the first event arrives, even before any assistant text.
+    yield ("user_message", user_msg.to_dict(include_attachments=True))
+
+    pack = convo.context_pack if convo.context_pack_id else None
+    payload = _build_message_payload(
+        history, cleaned, context_pack=pack,
+        attachments=attachments, context_notes=context_notes,
+    )
+
+    final_completion = None
+    parts: list[str] = []
+    try:
+        for kind, value in chat_completion_stream(
+            api_key, model=chosen_model, messages=payload, provider=chosen_provider
+        ):
+            if kind == "delta":
+                parts.append(value)
+                yield ("delta", value)
+            elif kind == "done":
+                final_completion = value
+    except LLMError as err:
+        raise ChatError(err.code, err.message, status=err.status) from err
+
+    # If the provider stream ended without a ``done`` event (shouldn't
+    # happen but be defensive), synthesize one from the parts we saw.
+    if final_completion is None:
+        from .llm_service import ChatCompletion
+        final_completion = ChatCompletion(
+            content="".join(parts), model=chosen_model, prompt_tokens=None,
+            completion_tokens=None, total_tokens=None,
+            finish_reason=None, raw_id=None, provider=chosen_provider,
+        )
+
+    assistant_msg = Message(
+        conversation_id=convo.id,
+        role="assistant",
+        content=final_completion.content,
+        model=final_completion.model or chosen_model,
+        provider=chosen_provider,
+        prompt_tokens=final_completion.prompt_tokens,
+        completion_tokens=final_completion.completion_tokens,
+        total_tokens=final_completion.total_tokens,
+    )
+    db.session.add(assistant_msg)
+    convo.last_message_at = _utcnow()
+    db.session.add(convo)
+    db.session.commit()
+
+    yield ("assistant_message", assistant_msg.to_dict())
+    yield ("conversation", convo.to_dict())
+
+
 def delete_conversation(user: User, conversation_id: int) -> None:
     convo = get_conversation_for_user(user, conversation_id)
     db.session.delete(convo)
@@ -870,6 +1031,237 @@ def regenerate_last_assistant(
     db.session.commit()
 
     return assistant_msg, convo
+
+
+def regenerate_last_assistant_stream(
+    user: User,
+    conversation_id: int,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    pivot_message_id: int | None = None,
+    new_user_content: str | None = None,
+    new_attachment_ids: list[int] | None = None,
+):
+    """Streaming retry — **in-place** rewrite of a single assistant turn.
+
+    Yields SSE-shaped tuples:
+
+    * ``("delta", "text chunk")`` — incremental assistant text
+    * ``("assistant_message", <Message dict>)`` — the final rewritten
+      row (note: ``id`` stays the same as the message that was retried
+      so the frontend can swap content in place without re-keying)
+    * ``("conversation", <Conversation dict>)`` — refreshed convo
+
+    **Semantics (changed in this milestone):**
+
+    OpenRouter / ChatGPT-style retry rewrites *only* the targeted
+    assistant message and leaves every later message on screen. We
+    no longer cascade-delete trailing turns when the user clicks
+    retry on a message in the middle of a thread.
+
+    Pivot resolution:
+
+    * No pivot                  → target = last assistant in thread
+                                  (or append a new one if none exists yet)
+    * Pivot is an assistant     → target = that assistant
+    * Pivot is a user message   → target = the assistant immediately
+                                  after that user (append a new
+                                  assistant at end if none exists)
+
+    The user message that drives the new completion is always the most
+    recent user turn at or before the target. ``new_user_content`` and
+    ``new_attachment_ids`` are only honored when the pivot is a user
+    message — that's the "edit and retry" subcase from the old API.
+    In every other case those arguments are ignored.
+    """
+    convo = get_conversation_for_user(user, conversation_id)
+
+    history = list(convo.messages.order_by(Message.id.asc()).all())
+    if not history:
+        raise ChatError(
+            "no_messages",
+            "Nothing to regenerate yet — send a message first.",
+            status=400,
+        )
+
+    pivot: Message | None = None
+    if pivot_message_id is not None:
+        pivot = next((m for m in history if m.id == pivot_message_id), None)
+        if pivot is None or pivot.conversation_id != convo.id:
+            raise ChatError("not_found", "Message not found.", status=404)
+
+    target: Message | None = None           # assistant row to overwrite (None → append)
+    replay_history: list[Message]            # all messages strictly *before* the driving user turn
+    last_user: Message | None = None         # the user message that drives the new completion
+
+    if pivot is None:
+        # No pivot: rewrite the most recent assistant (or append if none).
+        last_assistant_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].role == "assistant":
+                last_assistant_idx = i
+                break
+        if last_assistant_idx is None:
+            target = None
+            replay_history = list(history)
+        else:
+            target = history[last_assistant_idx]
+            replay_history = history[:last_assistant_idx]
+        for m in reversed(replay_history):
+            if m.role == "user":
+                last_user = m
+                break
+
+    elif pivot.role == "assistant":
+        # In-place retry of THIS assistant. Replay = everything before it.
+        idx = history.index(pivot)
+        target = pivot
+        replay_history = history[:idx]
+        for m in reversed(replay_history):
+            if m.role == "user":
+                last_user = m
+                break
+
+    elif pivot.role == "user":
+        # Re-roll the assistant that comes right after this user
+        # message (if any). If the user is the trailing message we
+        # append a fresh assistant.
+        idx = history.index(pivot)
+        next_assistant = None
+        for m in history[idx + 1 :]:
+            if m.role == "assistant":
+                next_assistant = m
+                break
+        target = next_assistant
+        replay_history = history[:idx]
+        # Edit-and-retry: optionally rewrite the user turn itself.
+        if new_user_content is not None:
+            cleaned = _normalize_content(new_user_content)
+            pivot.content = cleaned
+            if convo.title and convo.title in (
+                _derive_title(cleaned),
+                _derive_title(pivot.content),
+            ):
+                convo.title = _derive_title(cleaned)
+            db.session.add(pivot)
+            db.session.commit()
+        if new_attachment_ids is not None:
+            try:
+                rebind_message_attachments(user, pivot, new_attachment_ids)
+            except AttachmentError:
+                raise
+        last_user = pivot
+
+    else:
+        raise ChatError(
+            "unsupported_pivot",
+            "Retry / edit is only supported on user and assistant messages.",
+            status=400,
+        )
+
+    if last_user is None:
+        raise ChatError(
+            "no_user_turn",
+            "No user message found to regenerate from.",
+            status=400,
+        )
+
+    chosen_provider = _normalize_chat_provider(
+        provider if provider is not None else convo.provider
+    )
+    try:
+        api_key = get_decrypted_key_for(user, chosen_provider)
+    except CredentialsError as err:
+        raise ChatError(err.code, err.message, status=err.status) from err
+    if not api_key:
+        raise ChatError(
+            "no_api_key",
+            _PROVIDER_KEY_HINT.get(
+                chosen_provider,
+                f"Add your {get_provider(chosen_provider).label} API key in Settings before chatting.",
+            ),
+            status=400,
+        )
+    chosen_model = _normalize_model(model or convo.model)
+
+    pack = convo.context_pack if convo.context_pack_id else None
+    # ``replay_history`` already excludes ``last_user``; we pass it as
+    # the prior history and let _build_message_payload tack the user
+    # turn on as the active prompt.
+    prior_history = [m for m in replay_history if m is not last_user]
+    db.session.refresh(last_user)
+    user_attachments = list(last_user.attachments or [])
+    payload = _build_message_payload(
+        prior_history,
+        last_user.content,
+        context_pack=pack,
+        attachments=user_attachments,
+    )
+
+    final_completion = None
+    parts: list[str] = []
+    try:
+        for kind, value in chat_completion_stream(
+            api_key,
+            model=chosen_model,
+            messages=payload,
+            provider=chosen_provider,
+        ):
+            if kind == "delta":
+                parts.append(value)
+                yield ("delta", value)
+            elif kind == "done":
+                final_completion = value
+    except LLMError as err:
+        raise ChatError(err.code, err.message, status=err.status) from err
+
+    if final_completion is None:
+        from .llm_service import ChatCompletion
+        final_completion = ChatCompletion(
+            content="".join(parts),
+            model=chosen_model,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+            finish_reason=None,
+            raw_id=None,
+            provider=chosen_provider,
+        )
+
+    if target is not None:
+        # In-place rewrite. We keep ``target.id`` and ``created_at``
+        # stable so the frontend can match the streaming placeholder
+        # to the persisted row by id. Token counts are refreshed to
+        # reflect the new generation.
+        target.content = final_completion.content
+        target.model = final_completion.model or chosen_model
+        target.provider = chosen_provider
+        target.prompt_tokens = final_completion.prompt_tokens
+        target.completion_tokens = final_completion.completion_tokens
+        target.total_tokens = final_completion.total_tokens
+        db.session.add(target)
+        assistant_msg = target
+    else:
+        assistant_msg = Message(
+            conversation_id=convo.id,
+            role="assistant",
+            content=final_completion.content,
+            model=final_completion.model or chosen_model,
+            provider=chosen_provider,
+            prompt_tokens=final_completion.prompt_tokens,
+            completion_tokens=final_completion.completion_tokens,
+            total_tokens=final_completion.total_tokens,
+        )
+        db.session.add(assistant_msg)
+    convo.model = chosen_model
+    convo.provider = chosen_provider
+    convo.last_message_at = _utcnow()
+    db.session.add(convo)
+    db.session.commit()
+
+    yield ("assistant_message", assistant_msg.to_dict())
+    yield ("conversation", convo.to_dict())
 
 
 __all__ = [

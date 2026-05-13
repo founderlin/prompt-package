@@ -42,6 +42,7 @@ from .conversation import Conversation, Message
 from .memory import KINDS as MEMORY_KINDS, Memory
 from .project import Project
 from .provider_credential import ProviderCredential
+from .routine_wrap_config import RoutineWrapConfig
 from .user import User
 from .user_model_selection import UserModelSelection
 
@@ -75,6 +76,7 @@ __all__ = [
     "PACK_SOURCE_TYPES",
     "Project",
     "ProviderCredential",
+    "RoutineWrapConfig",
     "SOURCE_RECORD_TYPES",
     "SOURCE_TYPE_ATTACHMENT",
     "SOURCE_TYPE_CONVERSATION",

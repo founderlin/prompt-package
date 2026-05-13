@@ -90,6 +90,13 @@ class BaseConfig:
         os.getenv("LLM_VERIFY_TIMEOUT_SECONDS", os.getenv("OPENROUTER_TIMEOUT_SECONDS", "10"))
     )
 
+    # Wrap (project-memory Markdown) storage root. When unset we fall
+    # back to ``<backend>/instance/project-memory/wraps/`` which is
+    # already mounted on the persistent docker volume. Set
+    # WRAP_MEMORY_DIR to point wraps at an alternative location (e.g.
+    # a host-mounted user folder) without touching code.
+    WRAP_MEMORY_DIR = os.getenv("WRAP_MEMORY_DIR") or None
+
     JSON_SORT_KEYS = False
 
 

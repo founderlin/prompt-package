@@ -119,6 +119,43 @@
           {{ project.description || 'No description yet.' }}
         </p>
 
+        <!-- Phase 6: tiny "wrap memory" line — kept to one row so it
+             never competes with the description for vertical space. -->
+        <div
+          class="project-card__memory"
+          :class="{ 'project-card__memory--empty': memoryForProject(project.id).wrapCount === 0 }"
+          :title="memoryTooltip(project.id)"
+        >
+          <svg
+            class="project-card__memory-icon"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <span class="project-card__memory-text">
+            <template v-if="statsLoading">
+              <span class="spinner spinner--sm" aria-hidden="true" />
+              <span>Loading wrap memory…</span>
+            </template>
+            <template v-else-if="memoryForProject(project.id).wrapCount === 0">
+              Wraps: 0 · Memory: 0 B · Last Wrap: Never
+            </template>
+            <template v-else>
+              Wraps: {{ memoryForProject(project.id).wrapCount }} ·
+              Memory: {{ formatBytes(memoryForProject(project.id).memorySizeBytes) }} ·
+              Last Wrap: {{ formatLastWrapped(memoryForProject(project.id).lastWrappedAt) }}
+            </template>
+          </span>
+        </div>
+
         <footer class="project-card__footer">
           <span class="project-card__time">
             Updated {{ relativeTime(project.updated_at) || 'just now' }}
@@ -150,8 +187,10 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ProjectFormDialog from '@/components/projects/ProjectFormDialog.vue'
 import projectsApi from '@/api/projects'
+import wrapsApi from '@/api/wraps'
 import { describeApiError } from '@/utils/errors'
 import { relativeTime } from '@/utils/time'
+import { formatBytes } from '@/utils/bytes'
 
 const projects = ref([])
 const loading = ref(true)
@@ -160,6 +199,13 @@ const deletingId = ref(null)
 
 const dialogOpen = ref(false)
 const editingProject = ref(null)
+
+// Phase 6: wrap memory stats per project. Keyed by project id so we
+// can render each card independently. ``statsLoading`` is true on
+// the very first fetch; on subsequent project create/delete we just
+// re-request silently in the background.
+const memoryByProject = ref({})
+const statsLoading = ref(true)
 
 async function loadProjects() {
   loading.value = true
@@ -172,6 +218,57 @@ async function loadProjects() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadMemoryStats() {
+  // Fire-and-forget: the cards already render with a "loading…"
+  // placeholder if this fetch is still in flight by the time the
+  // project list arrives. Failures keep the empty default so the
+  // dashboard never blocks the rest of the projects view.
+  statsLoading.value = true
+  try {
+    const data = await wrapsApi.getAllStats()
+    const rows = Array.isArray(data?.stats) ? data.stats : []
+    const next = {}
+    for (const row of rows) {
+      next[row.projectId] = row
+    }
+    memoryByProject.value = next
+  } catch (_err) {
+    memoryByProject.value = {}
+  } finally {
+    statsLoading.value = false
+  }
+}
+
+function memoryForProject(projectId) {
+  return (
+    memoryByProject.value[projectId] || {
+      wrapCount: 0,
+      memorySizeBytes: 0,
+      lastWrappedAt: null
+    }
+  )
+}
+
+function formatLastWrapped(iso) {
+  if (!iso) return 'Never'
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    // Date-only is enough for the dashboard ("2026-05-13").
+    // We deliberately don't use locale strings here so the
+    // ISO-ish format reads the same on every machine.
+    return d.toISOString().slice(0, 10)
+  } catch (_e) {
+    return iso
+  }
+}
+
+function memoryTooltip(projectId) {
+  const m = memoryForProject(projectId)
+  if (!m.wrapCount) return 'No wraps saved for this project yet.'
+  return `${m.wrapCount} wraps · ${formatBytes(m.memorySizeBytes)} on disk`
 }
 
 function openCreate() {
@@ -220,7 +317,10 @@ async function onDelete(project) {
   }
 }
 
-onMounted(loadProjects)
+onMounted(() => {
+  loadProjects()
+  loadMemoryStats()
+})
 </script>
 
 <style scoped>
@@ -361,6 +461,38 @@ onMounted(loadProjects)
   -webkit-box-orient: vertical;
   overflow: hidden;
   min-height: calc(var(--text-sm) * 1.5 * 2);
+}
+
+.project-card__memory {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
+.project-card__memory--empty {
+  color: var(--color-text-muted);
+}
+
+.project-card__memory-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.project-card__memory-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .project-card__footer {

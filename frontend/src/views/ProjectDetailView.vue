@@ -71,19 +71,6 @@
           >
             Start chat
           </RouterLink>
-          <button
-            class="btn btn--ghost"
-            type="button"
-            :disabled="!conversations.length"
-            :title="
-              conversations.length
-                ? 'Wrap this whole project into a Context Pack'
-                : 'Start at least one blabla first'
-            "
-            @click="openWrapUp"
-          >
-            Wrap Up Project
-          </button>
           <button class="btn btn--ghost" type="button" @click="openEdit">Edit</button>
           <button
             class="btn btn--danger btn--ghost"
@@ -643,16 +630,6 @@
         @updated="onUpdated"
       />
 
-      <WrapUpDialog
-        :open="wrapUpOpen"
-        scope="project"
-        :project-id="project.id"
-        :context-label="project.name"
-        @close="closeWrapUp"
-        @success="onWrapUpSuccess"
-        @view-pack="onViewWrapUpPack"
-      />
-
       <BlaNoteFormDialog
         :open="noteFormOpen"
         :mode="noteFormMode"
@@ -671,7 +648,6 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ProjectFormDialog from '@/components/projects/ProjectFormDialog.vue'
-import WrapUpDialog from '@/components/wrapup/WrapUpDialog.vue'
 import BlaNoteFormDialog from '@/components/notes/BlaNoteFormDialog.vue'
 import projectsApi from '@/api/projects'
 import chatApi from '@/api/chat'
@@ -702,7 +678,6 @@ const project = ref(null)
 const errorMessage = ref('')
 const deleting = ref(false)
 const dialogOpen = ref(false)
-const wrapUpOpen = ref(false)
 const toasts = useToasts()
 
 const conversations = ref([])
@@ -1027,52 +1002,6 @@ function closeDialog() {
 function onUpdated(updated) {
   project.value = updated
   closeDialog()
-}
-
-function openWrapUp() {
-  wrapUpOpen.value = true
-}
-
-function closeWrapUp() {
-  wrapUpOpen.value = false
-}
-
-function onWrapUpSuccess(pack /*, job */) {
-  // Refresh the packs list so the new pack shows up immediately in
-  // the "Context Packs" section without a page reload.
-  if (pack) {
-    packs.value = [shapePackForList(pack), ...packs.value]
-  }
-  toasts.push({
-    kind: 'success',
-    message: `Wrap Up complete · "${pack?.title || 'Context Pack'}" saved.`,
-    link:
-      pack && project.value
-        ? {
-            name: 'project-context-pack',
-            params: {
-              id: String(project.value.id),
-              packId: String(pack.id)
-            }
-          }
-        : null,
-    linkText: pack ? 'View Context Pack' : ''
-  })
-}
-
-function onViewWrapUpPack(pack) {
-  if (!pack || !project.value) {
-    wrapUpOpen.value = false
-    return
-  }
-  wrapUpOpen.value = false
-  router.push({
-    name: 'project-context-pack',
-    params: {
-      id: String(project.value.id),
-      packId: String(pack.id)
-    }
-  })
 }
 
 async function onDelete() {

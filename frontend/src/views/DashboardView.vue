@@ -61,6 +61,93 @@
       />
     </section>
 
+    <!-- Phase 6: Wrap memory per project. Deliberately minimal —
+         three numbers per row, no charts, no health scores. -->
+    <section class="card">
+      <header class="card-header-row">
+        <h3 class="card__title card__title--sm">Wrap memory</h3>
+        <RouterLink to="/projects" class="link-btn">
+          Manage projects
+        </RouterLink>
+      </header>
+
+      <div v-if="memoryStatsLoading" class="status-row">
+        <span class="spinner" aria-hidden="true" />
+        <span class="status-row__label">Loading wrap memory…</span>
+      </div>
+
+      <div
+        v-else-if="memoryStatsError"
+        class="banner banner--error"
+        role="alert"
+      >
+        <strong>Could not load wrap memory.</strong>
+        <span>{{ memoryStatsError }}</span>
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          @click="loadMemoryStats"
+        >
+          Retry
+        </button>
+      </div>
+
+      <ul
+        v-else-if="memoryStats.length"
+        class="memory-list"
+      >
+        <li
+          v-for="row in memoryStats"
+          :key="row.projectId"
+          class="memory-row"
+        >
+          <RouterLink
+            :to="{ name: 'project-detail', params: { id: String(row.projectId) } }"
+            class="memory-row__link"
+          >
+            <span class="memory-row__name">{{ row.projectName }}</span>
+            <span
+              class="memory-row__meta"
+              :class="{ 'memory-row__meta--empty': row.wrapCount === 0 }"
+            >
+              <template v-if="row.wrapCount === 0">
+                Wraps: 0 · Memory: 0 B · Last Wrap: Never
+              </template>
+              <template v-else>
+                {{ row.wrapCount }}
+                {{ row.wrapCount === 1 ? 'wrap' : 'wraps' }}
+                · {{ formatBytes(row.memorySizeBytes) }}
+                · Last wrap: {{ formatLastWrapped(row.lastWrappedAt) }}
+              </template>
+            </span>
+          </RouterLink>
+        </li>
+      </ul>
+
+      <EmptyState
+        v-else
+        compact
+        title="No wraps yet"
+        description="Open a project, send some messages, and click Wrap to save a Markdown memory of the session."
+      >
+        <template #icon>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+        </template>
+      </EmptyState>
+    </section>
+
     <section class="card">
       <header class="card-header-row">
         <h3 class="card__title card__title--sm">Recent blablas</h3>
@@ -281,9 +368,11 @@ import projectsApi from '@/api/projects'
 import chatApi from '@/api/chat'
 import contextPacksApi from '@/api/contextPacks'
 import usageApi from '@/api/usage'
+import wrapsApi from '@/api/wraps'
 import { useAuth } from '@/stores/auth'
 import { describeApiError } from '@/utils/errors'
 import { relativeTime } from '@/utils/time'
+import { formatBytes } from '@/utils/bytes'
 import { modelLabel } from '@/constants/models'
 
 const auth = useAuth()
@@ -305,6 +394,11 @@ const usageSummary = ref(null)
 const usageLoading = ref(true)
 const usageError = ref('')
 const usageGranularity = ref('day')
+
+// Phase 6 — Wrap memory section state.
+const memoryStats = ref([])
+const memoryStatsLoading = ref(true)
+const memoryStatsError = ref('')
 
 const welcomeTitle = computed(() => {
   const email = auth.user.value?.email
@@ -383,11 +477,40 @@ function onGranularityChange(next) {
   loadUsage()
 }
 
+async function loadMemoryStats() {
+  memoryStatsLoading.value = true
+  memoryStatsError.value = ''
+  try {
+    const data = await wrapsApi.getAllStats()
+    memoryStats.value = Array.isArray(data?.stats) ? data.stats : []
+  } catch (err) {
+    memoryStats.value = []
+    memoryStatsError.value = describeApiError(
+      err,
+      'Could not load wrap memory.'
+    )
+  } finally {
+    memoryStatsLoading.value = false
+  }
+}
+
+function formatLastWrapped(iso) {
+  if (!iso) return 'Never'
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return iso
+    return d.toISOString().slice(0, 10)
+  } catch (_e) {
+    return iso
+  }
+}
+
 onMounted(() => {
   loadProjectCount()
   loadRecentConversations()
   loadRecentPacks()
   loadUsage()
+  loadMemoryStats()
 })
 </script>
 
@@ -550,5 +673,56 @@ onMounted(() => {
 .recent-row__chevron {
   color: var(--color-text-muted);
   flex-shrink: 0;
+}
+
+/* Phase 6 — Wrap memory list. Kept visually similar to .recent-list
+   so the dashboard reads as a single design language; the meta line
+   is the one we care about ("12 wraps · 428 KB · Last wrap: …"). */
+.memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.memory-row__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: space-between;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  text-decoration: none;
+  color: inherit;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.memory-row__link:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border);
+}
+
+.memory-row__name {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.memory-row__meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.memory-row__meta--empty {
+  color: var(--color-text-muted);
 }
 </style>

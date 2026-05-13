@@ -14,7 +14,17 @@ Anything not owned by the caller surfaces as 404.
 
 from __future__ import annotations
 
-from flask import Blueprint, abort, jsonify, request, send_file
+import json as _json
+
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    jsonify,
+    request,
+    send_file,
+    stream_with_context,
+)
 
 from app.services.attachment_service import (
     AttachmentError,
@@ -34,7 +44,9 @@ from app.services.chat_service import (
     list_messages,
     list_recent_for_user,
     regenerate_last_assistant,
+    regenerate_last_assistant_stream,
     send_user_message,
+    send_user_message_stream,
     set_context_pack,
 )
 from app.services.memory_service import (
@@ -209,6 +221,85 @@ def create_message(conversation_id: int):
     )
 
 
+@conversations_bp.post("/<int:conversation_id>/messages/stream")
+@login_required
+def create_message_stream(conversation_id: int):
+    """SSE counterpart of :func:`create_message`.
+
+    Streams the assistant reply as ``text/event-stream`` so the
+    browser can render the response token-by-token. Event types:
+
+    * ``event: user_message`` — server-side user-row payload
+    * ``event: delta``        — incremental assistant text fragment
+    * ``event: assistant_message`` — final assistant-row payload
+    * ``event: conversation`` — refreshed conversation summary
+    * ``event: error``        — fatal error (closes the stream)
+    """
+    user = get_current_user()
+    data = _payload()
+    raw_ids = data.get("attachment_ids") or []
+    if not isinstance(raw_ids, list):
+        return (
+            jsonify(
+                {
+                    "error": "validation_error",
+                    "message": "attachment_ids must be a list.",
+                }
+            ),
+            400,
+        )
+    raw_context_items = (
+        data.get("context_items")
+        if "context_items" in data
+        else data.get("contextItems")
+    )
+
+    def _sse(event: str, payload) -> bytes:
+        # SSE wire format: ``event:`` line + ``data:`` line + blank line.
+        # Body is JSON-encoded so the client can ``JSON.parse`` directly.
+        body = _json.dumps(payload, ensure_ascii=False)
+        return f"event: {event}\ndata: {body}\n\n".encode("utf-8")
+
+    @stream_with_context
+    def generate():
+        try:
+            for kind, value in send_user_message_stream(
+                user,
+                conversation_id,
+                content=data.get("content"),
+                model=data.get("model"),
+                provider=data.get("provider"),
+                attachment_ids=raw_ids,
+                context_items=raw_context_items,
+            ):
+                yield _sse(kind, value)
+        except ChatError as err:
+            yield _sse(
+                "error",
+                {"error": err.code, "message": err.message, "status": err.status},
+            )
+        except AttachmentError as err:
+            yield _sse(
+                "error",
+                {"error": err.code, "message": err.message, "status": err.status},
+            )
+        except Exception as exc:  # pragma: no cover - defensive only
+            yield _sse(
+                "error",
+                {"error": "server_error", "message": str(exc), "status": 500},
+            )
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @conversations_bp.post("/<int:conversation_id>/summarize")
 @login_required
 def summarize(conversation_id: int):
@@ -346,6 +437,94 @@ def regenerate(conversation_id: int):
             }
         ),
         201,
+    )
+
+
+@conversations_bp.post("/<int:conversation_id>/regenerate/stream")
+@login_required
+def regenerate_stream(conversation_id: int):
+    """SSE counterpart of :func:`regenerate`. Same body shape, but the
+    response is a ``text/event-stream`` of ``delta`` / ``assistant_message``
+    / ``conversation`` events (no ``user_message`` — the user row is
+    already on screen for retry flows)."""
+    user = get_current_user()
+    data = _payload()
+    raw_pivot = data.get("message_id")
+    pivot_id: int | None
+    if raw_pivot in (None, ""):
+        pivot_id = None
+    else:
+        try:
+            pivot_id = int(raw_pivot)
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "error": "validation_error",
+                        "message": "message_id must be an integer.",
+                    }
+                ),
+                400,
+            )
+
+    new_attachment_ids: list[int] | None
+    if "attachment_ids" in data:
+        raw_ids = data.get("attachment_ids")
+        if not isinstance(raw_ids, list):
+            return (
+                jsonify(
+                    {
+                        "error": "validation_error",
+                        "message": "attachment_ids must be a list.",
+                    }
+                ),
+                400,
+            )
+        new_attachment_ids = raw_ids
+    else:
+        new_attachment_ids = None
+
+    def _sse(event: str, payload) -> bytes:
+        body = _json.dumps(payload, ensure_ascii=False)
+        return f"event: {event}\ndata: {body}\n\n".encode("utf-8")
+
+    @stream_with_context
+    def generate():
+        try:
+            for kind, value in regenerate_last_assistant_stream(
+                user,
+                conversation_id,
+                model=data.get("model"),
+                provider=data.get("provider"),
+                pivot_message_id=pivot_id,
+                new_user_content=data.get("content"),
+                new_attachment_ids=new_attachment_ids,
+            ):
+                yield _sse(kind, value)
+        except ChatError as err:
+            yield _sse(
+                "error",
+                {"error": err.code, "message": err.message, "status": err.status},
+            )
+        except AttachmentError as err:
+            yield _sse(
+                "error",
+                {"error": err.code, "message": err.message, "status": err.status},
+            )
+        except Exception as exc:  # pragma: no cover - defensive only
+            yield _sse(
+                "error",
+                {"error": "server_error", "message": str(exc), "status": 500},
+            )
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

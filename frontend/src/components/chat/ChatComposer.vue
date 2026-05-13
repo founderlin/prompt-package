@@ -35,6 +35,26 @@ const internal = ref(props.modelValue || '')
 const isDragging = ref(false)
 let dragCounter = 0
 
+// Track IME composition explicitly. Chrome's ``event.isComposing`` is
+// unreliable on Enter (the keydown that *ends* a CJK composition often
+// still reports ``isComposing: true``, so naive checks silently swallow
+// the user's "send" Enter). Tracking ``compositionstart`` / ``end``
+// ourselves gives us a deterministic signal:
+//   - while composing: skip Enter
+//   - the keydown that produced the ``compositionend`` is the IME
+//     confirm — we also skip it, but only for ~80ms after end fires.
+let composing = false
+let lastCompositionEnd = 0
+
+function onCompositionStart() {
+  composing = true
+}
+
+function onCompositionEnd() {
+  composing = false
+  lastCompositionEnd = Date.now()
+}
+
 watch(
   () => props.modelValue,
   (next) => {
@@ -55,10 +75,16 @@ watch(internal, (next) => {
 })
 
 function handleKeydown(event) {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-    event.preventDefault()
-    submit()
-  }
+  if (event.key !== 'Enter' || event.shiftKey) return
+  // Use our own composition tracking instead of ``event.isComposing``
+  // (see comment above). The 80ms buffer absorbs the keydown that
+  // fires immediately after ``compositionend`` — that one is the IME
+  // confirm, not a "send" intent.
+  if (composing) return
+  if (event.keyCode === 229) return
+  if (Date.now() - lastCompositionEnd < 80) return
+  event.preventDefault()
+  submit()
 }
 
 function submit() {
@@ -325,6 +351,8 @@ function iconForAttachment(att) {
         :placeholder="placeholder"
         :disabled="disabled"
         @keydown="handleKeydown"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
         @paste="onPaste"
       />
 

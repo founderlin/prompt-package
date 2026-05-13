@@ -21,6 +21,11 @@ const baseURL =
       ? 'http://127.0.0.1:5001'
       : ''
 
+// Exported so non-axios callers (e.g. ``fetch`` + ``ReadableStream`` for
+// SSE chat streaming) can hit the same backend in dev *and* prod
+// without each call site re-deriving this rule.
+export const apiBaseURL = baseURL
+
 const TOKEN_STORAGE_KEY = 'promptpackage_token'
 // Older builds stored the token under this key; migrate once then forget.
 const LEGACY_TOKEN_STORAGE_KEYS = ['imrockey_token']

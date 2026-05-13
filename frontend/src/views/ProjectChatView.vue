@@ -4,7 +4,13 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import MessageList from '@/components/chat/MessageList.vue'
 import ModelPicker from '@/components/chat/ModelPicker.vue'
-import WrapUpDialog from '@/components/wrapup/WrapUpDialog.vue'
+import WrapMenu from '@/components/wrapup/WrapMenu.vue'
+import QuickWrapDialog from '@/components/wrapup/QuickWrapDialog.vue'
+import AdvancedWrapDialog from '@/components/wrapup/AdvancedWrapDialog.vue'
+import RoutineWrapSettingsDialog from '@/components/wrapup/RoutineWrapSettingsDialog.vue'
+import RoutineWrapReviewDialog from '@/components/wrapup/RoutineWrapReviewDialog.vue'
+import RoutineWrapReminder from '@/components/wrapup/RoutineWrapReminder.vue'
+import wrapsApi from '@/api/wraps'
 import ChatContextPicker from '@/components/chat/ChatContextPicker.vue'
 import chatApi from '@/api/chat'
 import contextPacksApi from '@/api/contextPacks'
@@ -13,6 +19,7 @@ import modelSelectionsApi from '@/api/modelSelections'
 import attachmentsApi from '@/api/attachments'
 import projectsApi from '@/api/projects'
 import { useAuth } from '@/stores/auth'
+import { getStoredToken } from '@/api/client'
 import { useToasts } from '@/stores/toasts'
 import { describeApiError } from '@/utils/errors'
 import { relativeTime } from '@/utils/time'
@@ -52,6 +59,15 @@ const conversation = ref(null)
 const messages = ref([])
 const sending = ref(false)
 const sendError = ref('')
+
+// True while we want the "Model is thinking…" placeholder to show in
+// MessageList. We hide it as soon as the streaming assistant
+// placeholder bubble starts receiving deltas — having both at once is
+// double-noise. Computed off ``sending`` + the presence of a streaming
+// row so it follows the lifecycle automatically.
+const pendingPlaceholder = computed(
+  () => sending.value && !messages.value.some((m) => m && m._streaming)
+)
 // AbortController for the in-flight chat-completion request. Non-null
 // only while a request is pending so the Stop button can call .abort().
 const sendAbortController = ref(null)
@@ -75,11 +91,22 @@ const summarizeBanner = ref('')
 const memoriesList = ref([])
 const memoriesOpen = ref(false)
 
-// R-WRAPUP: Conversation-level Context Pack generation. This is separate
-// from ``summarizing`` (the legacy memory-extraction flow driven by
-// handleWrapUp) — Wrap Up creates a full Context Pack row via the new
-// /api/conversations/:id/wrap-up endpoint.
-const wrapUpOpen = ref(false)
+// Phase 3 + 4 + 5: Project-memory Wrap (Markdown to disk).
+// Only one Wrap dialog is open at a time; the menu enforces that
+// by emitting a single 'quick' | 'advanced' | 'routine-settings' event.
+const quickWrapOpen = ref(false)
+const advancedWrapOpen = ref(false)
+const routineSettingsOpen = ref(false)
+const routineReviewOpen = ref(false)
+
+// Routine reminder banner: hydrated from the routine-status endpoint
+// on project load. ``routineReminderConfig`` mirrors the server's
+// snapshot so the banner can show "weekly" / "biweekly" / etc.
+const routineReminderVisible = ref(false)
+const routineReminderConfig = ref(null)
+// Set during the brief "I clicked Dismiss, request is in flight"
+// window so the buttons stay disabled and we don't double-fire.
+const routineReminderBusy = ref(false)
 
 // R-BLA-NOTE-CHAT: per-message context items chosen via ChatContextPicker.
 // Each item is { type: 'bla_note', id: <int>, title: <string> }.
@@ -251,6 +278,10 @@ async function bootstrap() {
     state.value = 'ready'
     nextTick(() => composer.value?.focus())
     focusHashTarget()
+    // Phase 5: check whether the project's routine wrap is due.
+    // Fire-and-forget — failures keep the banner hidden, never block
+    // the bootstrap path.
+    refreshRoutineStatus()
   } catch (err) {
     if (err?.response?.status === 404) {
       state.value = 'not-found'
@@ -595,57 +626,168 @@ async function handleSubmit(content) {
       type: it.type,
       id: it.id
     }))
-    const data = await chatApi.sendMessage(conversation.value.id, {
-      content: content || '',
-      model: modelId,
-      provider: providerId,
-      attachmentIds,
-      contextItems: contextItemsToSend,
-      signal: controller?.signal
-    })
-    // Replace the optimistic temp bubble with the authoritative pair from
-    // the server. Rebuild in one pass so that (a) the temp is definitely
-    // gone regardless of whether its object identity survived reactivity
-    // wrapping, and (b) we dedupe by `id` in case a concurrent refetch
-    // (e.g. from a route change) already pushed the same message in.
+
+    // Streaming send — producer / consumer split.
+    //
+    // The fetch reader is the *producer*: it pushes delta text into
+    // ``pendingBuffer`` as fast as the server delivers it.
+    //
+    // A ``requestAnimationFrame``-driven painter is the *consumer*:
+    // it drains the buffer onto the in-flight assistant bubble at a
+    // rate the user's eye can follow (~5% of buffer per frame, ≥1
+    // char). The split matters because most modern models stream
+    // bursts of dozens of tokens in well under a second — if we
+    // appended every delta straight to ``message.content`` inside
+    // the ``for await``, Vue wouldn't get a paint pass until the
+    // whole response was already on screen.
+    //
+    // Trade-off: ``streamingId`` keys are how the painter finds the
+    // current bubble inside ``messages.value`` — splice replaces
+    // object identity each frame so we can't keep a long-lived ref.
+    let serverUserMessage = null
+    let finalAssistantMessage = null
+    let finalConversation = null
+
+    const streamingId = `tmp-asst-${Date.now()}`
+    let pendingBuffer = ''
+    let streamDone = false
+    let painterId = null
+
+    function paintFrame() {
+      const idx = messages.value.findIndex(
+        (m) => m && m._streamingId === streamingId
+      )
+      // If the bubble is gone (route change / cleanup) we stop the
+      // painter — there's nowhere to write.
+      if (idx === -1) {
+        painterId = null
+        return
+      }
+      if (pendingBuffer.length > 0) {
+        // Pull a slice proportional to how much is queued: long bursts
+        // catch up quickly, single-token deltas paint 1 char/frame.
+        // At 60fps a 600-char response finishes in ~20 frames (~330ms).
+        const take = Math.max(1, Math.ceil(pendingBuffer.length / 20))
+        const chunk = pendingBuffer.slice(0, take)
+        pendingBuffer = pendingBuffer.slice(take)
+        const bubble = messages.value[idx]
+        const updated = { ...bubble, content: bubble.content + chunk }
+        messages.value.splice(idx, 1, updated)
+      }
+      if (pendingBuffer.length === 0 && streamDone) {
+        painterId = null
+        return
+      }
+      painterId = requestAnimationFrame(paintFrame)
+    }
+
+    function ensurePainter() {
+      if (painterId == null) {
+        painterId = requestAnimationFrame(paintFrame)
+      }
+    }
+
+    try {
+      for await (const evt of chatApi.sendMessageStream(
+        conversation.value.id,
+        {
+          content: content || '',
+          model: modelId,
+          provider: providerId,
+          attachmentIds,
+          contextItems: contextItemsToSend,
+          signal: controller?.signal,
+          authToken: getStoredToken()
+        }
+      )) {
+        if (evt.event === 'user_message') {
+          serverUserMessage = evt.data
+          const idx = messages.value.findIndex(
+            (m) => m === tempUserMsg || m._tempId === tempUserMsg._tempId
+          )
+          if (idx !== -1) {
+            messages.value.splice(idx, 1, serverUserMessage)
+          }
+          // Spin up the placeholder assistant bubble — keyed by
+          // ``_streamingId`` so the painter can re-find it.
+          const placeholder = {
+            _streamingId: streamingId,
+            role: 'assistant',
+            content: '',
+            model: modelId,
+            provider: providerId,
+            created_at: new Date().toISOString(),
+            _streaming: true
+          }
+          messages.value = [...messages.value, placeholder]
+        } else if (evt.event === 'delta') {
+          if (typeof evt.data === 'string') {
+            pendingBuffer += evt.data
+            ensurePainter()
+          }
+        } else if (evt.event === 'assistant_message') {
+          finalAssistantMessage = evt.data
+        } else if (evt.event === 'conversation') {
+          finalConversation = evt.data
+        } else if (evt.event === 'error') {
+          const msg = evt.data?.message || 'Streaming chat failed.'
+          const err = new Error(msg)
+          err.status = evt.data?.status
+          throw err
+        }
+      }
+    } finally {
+      streamDone = true
+    }
+
+    // Drain the painter before reconciling so the final placeholder
+    // text matches the assistant_message we're about to swap in.
+    // Worst case: ~600ms for a long response (20 frames @ 5%).
+    while (pendingBuffer.length > 0) {
+      await new Promise((r) => requestAnimationFrame(r))
+    }
+    if (painterId != null) {
+      cancelAnimationFrame(painterId)
+      painterId = null
+    }
+
+    // Reconcile: swap the placeholder out for the authoritative
+    // assistant row, dedupe by id, and update the conversation
+    // summary if we got one.
     const seenIds = new Set()
     const next = []
     for (const m of messages.value) {
       if (m === tempUserMsg) continue
       if (m?._tempId && m._tempId === tempUserMsg._tempId) continue
+      if (m?._streaming) continue
       if (m?.id != null) {
         if (seenIds.has(m.id)) continue
         seenIds.add(m.id)
       }
       next.push(m)
     }
-    if (data?.user_message) {
-      const id = data.user_message.id
-      if (id == null || !seenIds.has(id)) {
-        if (id != null) seenIds.add(id)
-        next.push(data.user_message)
+    if (serverUserMessage) {
+      const id = serverUserMessage.id
+      if (id != null && !seenIds.has(id)) {
+        seenIds.add(id)
+        next.push(serverUserMessage)
       }
     }
-    if (data?.assistant_message) {
-      const id = data.assistant_message.id
-      if (id == null || !seenIds.has(id)) {
-        if (id != null) seenIds.add(id)
-        next.push(data.assistant_message)
+    if (finalAssistantMessage) {
+      const id = finalAssistantMessage.id
+      if (id != null && !seenIds.has(id)) {
+        seenIds.add(id)
+        next.push(finalAssistantMessage)
       }
     }
     messages.value = next
-    if (data?.conversation) {
-      conversation.value = { ...conversation.value, ...data.conversation }
+    if (finalConversation) {
+      conversation.value = { ...conversation.value, ...finalConversation }
       applyConversationModel(
-        data.conversation.model,
-        data.conversation.provider
+        finalConversation.model,
+        finalConversation.provider
       )
     }
-    // R-BLA-NOTE-CHAT: the context items we just sent are now persisted
-    // on data.user_message.context_metadata — safe to clear the draft
-    // selection. Future composes start fresh.
-    selectedContextItems.value = []
-    // Revoke optimistic preview URLs now that the server has the canonical copy.
     for (const a of inflightAttachments) {
       if (a.previewUrl && typeof URL?.revokeObjectURL === 'function') {
         try {
@@ -663,11 +805,13 @@ async function handleSubmit(content) {
       err?.code === 'ERR_CANCELED' ||
       (controller && controller.signal.aborted)
     if (wasAborted) {
-      // The user hit Stop. Keep whatever's on screen; make sure the
-      // optimistic bubble is removed and we re-sync from the server so
-      // the user message that was already committed (backend commits
-      // user msg before the LLM call) is reflected correctly.
-      messages.value = messages.value.filter((m) => m !== tempUserMsg)
+      // The user hit Stop. Drop both the optimistic user bubble *and*
+      // any in-flight streaming assistant placeholder, then refetch
+      // the authoritative history (backend commits the user message
+      // before the LLM call, so it'll be there even on abort).
+      messages.value = messages.value.filter(
+        (m) => m !== tempUserMsg && !m?._streaming
+      )
       sendError.value = ''
       try {
         const refreshed = await chatApi.listMessages(conversation.value.id)
@@ -680,21 +824,35 @@ async function handleSubmit(content) {
     } else {
       sendError.value = describeApiError(
         err,
-        'Could not get a reply from the model.'
+        err?.message || 'Could not get a reply from the model.'
       )
       try {
         const refreshed = await chatApi.listMessages(conversation.value.id)
         if (Array.isArray(refreshed?.messages)) {
+          // Drop the in-flight streaming placeholder before applying
+          // the server's authoritative list.
           messages.value = refreshed.messages
         }
       } catch (_e) {
-        messages.value = messages.value.filter((m) => m !== tempUserMsg)
+        messages.value = messages.value.filter(
+          (m) => m !== tempUserMsg && !m?._streaming
+        )
       }
     }
     loadConversations()
   } finally {
     sending.value = false
     sendAbortController.value = null
+    // Drop any orphan streaming placeholder so it doesn't render
+    // forever if an early abort left it behind.
+    if (messages.value.some((m) => m && m._streaming)) {
+      messages.value = messages.value.filter((m) => !m?._streaming)
+    }
+    // R-BLA-NOTE-CHAT: always clear the draft context selection after a
+    // send attempt (success, error, or abort). Each new message starts
+    // with a fresh selection — the user re-opens the picker if they
+    // want to attach notes again.
+    selectedContextItems.value = []
     nextTick(() => composer.value?.focus())
   }
 }
@@ -749,30 +907,37 @@ async function handleDeleteMessage(msg) {
 }
 
 async function handleRetryMessage(msg) {
-  // Fired from any assistant *or* user bubble. We pass the clicked
-  // message's id to the backend's /regenerate so it knows exactly
-  // which pivot point to rebuild from (rather than always targeting
-  // "the latest assistant").
+  // OpenRouter / ChatGPT-style retry: rewrite ONLY the targeted
+  // assistant message's content in place. Every later message stays
+  // on screen unchanged. The frontend identifies the in-place target
+  // by id and uses ``_replacingId`` to route streaming deltas into
+  // that existing bubble (rather than appending a new one at the end).
   if (!conversation.value || sending.value) return
   if (!msg) return
 
   const modelId = (selectedModel.value || DEFAULT_MODEL_ID).trim()
   const providerId = selectedProvider.value || DEFAULT_PROVIDER
 
-  // Optimistically trim everything at/after the pivot so the "thinking…"
-  // placeholder lands in the right spot. For assistant pivots that's
-  // `id >= pivotId`; for user pivots we only drop strictly greater
-  // (the user turn itself stays).
   const pivotId = msg?.id
-  if (pivotId != null) {
-    if (msg.role === 'assistant') {
-      messages.value = messages.value.filter(
-        (m) => m.id == null || Number(m.id) < Number(pivotId)
-      )
-    } else if (msg.role === 'user') {
-      messages.value = messages.value.filter(
-        (m) => m.id == null || Number(m.id) <= Number(pivotId)
-      )
+
+  // Resolve which assistant row will be rewritten:
+  // * assistant pivot → the pivot itself.
+  // * user pivot     → the assistant that comes right after the pivot
+  //                    (if any; trailing user → append).
+  // If we can't locate one, ``targetId`` stays null and we append a
+  // fresh placeholder to the end as a graceful fallback.
+  let targetId = null
+  if (msg.role === 'assistant' && pivotId != null) {
+    targetId = pivotId
+  } else if (msg.role === 'user' && pivotId != null) {
+    const pivotIdx = messages.value.findIndex((m) => m.id === pivotId)
+    if (pivotIdx !== -1) {
+      for (let i = pivotIdx + 1; i < messages.value.length; i++) {
+        if (messages.value[i].role === 'assistant') {
+          targetId = messages.value[i].id
+          break
+        }
+      }
     }
   }
 
@@ -782,19 +947,144 @@ async function handleRetryMessage(msg) {
   sendError.value = ''
   sending.value = true
 
-  try {
-    const data = await chatApi.retryAssistant(conversation.value.id, {
+  let finalAssistantMessage = null
+  let finalConversation = null
+
+  const streamingId = `tmp-asst-retry-${Date.now()}`
+  let pendingBuffer = ''
+  let streamDone = false
+  let painterId = null
+
+  // Snapshot the original assistant row (if any) so we can put it
+  // back when retry is aborted/fails.
+  let originalBubble = null
+  if (targetId != null) {
+    const tIdx = messages.value.findIndex((m) => m.id === targetId)
+    if (tIdx !== -1) originalBubble = { ...messages.value[tIdx] }
+  }
+
+  function paintFrame() {
+    const idx = messages.value.findIndex(
+      (m) => m && m._streamingId === streamingId
+    )
+    if (idx === -1) {
+      painterId = null
+      return
+    }
+    if (pendingBuffer.length > 0) {
+      const take = Math.max(1, Math.ceil(pendingBuffer.length / 20))
+      const chunk = pendingBuffer.slice(0, take)
+      pendingBuffer = pendingBuffer.slice(take)
+      const bubble = messages.value[idx]
+      const updated = { ...bubble, content: bubble.content + chunk }
+      messages.value.splice(idx, 1, updated)
+    }
+    if (pendingBuffer.length === 0 && streamDone) {
+      painterId = null
+      return
+    }
+    painterId = requestAnimationFrame(paintFrame)
+  }
+
+  function ensurePainter() {
+    if (painterId == null) {
+      painterId = requestAnimationFrame(paintFrame)
+    }
+  }
+
+  // Mark the in-place target as streaming: clear its visible content
+  // and tag it with our streaming id so the painter can find it. The
+  // rest of the messages array — including everything *after* the
+  // target — is left untouched.
+  if (targetId != null) {
+    const tIdx = messages.value.findIndex((m) => m.id === targetId)
+    if (tIdx !== -1) {
+      const bubble = messages.value[tIdx]
+      messages.value.splice(tIdx, 1, {
+        ...bubble,
+        content: '',
+        _streamingId: streamingId,
+        _streaming: true,
+        _replacingId: targetId
+      })
+    }
+  } else {
+    // No target → append a fresh placeholder at the end.
+    const placeholder = {
+      _streamingId: streamingId,
+      role: 'assistant',
+      content: '',
       model: modelId,
       provider: providerId,
-      messageId: pivotId,
-      signal: controller?.signal
-    })
-    if (data?.assistant_message) messages.value.push(data.assistant_message)
-    if (data?.conversation) {
-      conversation.value = { ...conversation.value, ...data.conversation }
+      created_at: new Date().toISOString(),
+      _streaming: true
+    }
+    messages.value = [...messages.value, placeholder]
+  }
+
+  try {
+    try {
+      for await (const evt of chatApi.retryAssistantStream(
+        conversation.value.id,
+        {
+          model: modelId,
+          provider: providerId,
+          messageId: pivotId,
+          signal: controller?.signal,
+          authToken: getStoredToken()
+        }
+      )) {
+        if (evt.event === 'delta') {
+          if (typeof evt.data === 'string') {
+            pendingBuffer += evt.data
+            ensurePainter()
+          }
+        } else if (evt.event === 'assistant_message') {
+          finalAssistantMessage = evt.data
+        } else if (evt.event === 'conversation') {
+          finalConversation = evt.data
+        } else if (evt.event === 'error') {
+          const msg = evt.data?.message || 'Could not regenerate the reply.'
+          const err = new Error(msg)
+          err.status = evt.data?.status
+          throw err
+        }
+      }
+    } finally {
+      streamDone = true
+    }
+
+    while (pendingBuffer.length > 0) {
+      await new Promise((r) => requestAnimationFrame(r))
+    }
+    if (painterId != null) {
+      cancelAnimationFrame(painterId)
+      painterId = null
+    }
+
+    // Swap the streaming placeholder out for the persisted row,
+    // preserving its position in the messages array (so anything
+    // after it stays visible). When ``targetId`` was null we just
+    // pop the trailing placeholder and append the new row.
+    if (finalAssistantMessage) {
+      const idx = messages.value.findIndex(
+        (m) => m && m._streamingId === streamingId
+      )
+      if (idx !== -1) {
+        messages.value.splice(idx, 1, finalAssistantMessage)
+      } else {
+        messages.value = [...messages.value, finalAssistantMessage]
+      }
+    } else {
+      messages.value = messages.value.filter(
+        (m) => m?._streamingId !== streamingId
+      )
+    }
+    if (finalConversation) {
+      conversation.value = { ...conversation.value, ...finalConversation }
       applyConversationModel(
-        data.conversation.model,
-        data.conversation.provider
+        finalConversation.model,
+        finalConversation.provider
       )
     }
     loadConversations()
@@ -807,22 +1097,36 @@ async function handleRetryMessage(msg) {
     if (!wasAborted) {
       sendError.value = describeApiError(
         err,
-        'Could not regenerate the reply.'
+        err?.message || 'Could not regenerate the reply.'
       )
     }
-    // Always re-sync from the server so the old assistant comes back
-    // if the retry failed.
-    try {
-      const refreshed = await chatApi.listMessages(conversation.value.id)
-      if (Array.isArray(refreshed?.messages)) {
-        messages.value = refreshed.messages
+    // Restore the original bubble at its original position so the
+    // user doesn't lose the previous reply on a failed retry.
+    if (originalBubble != null) {
+      const idx = messages.value.findIndex(
+        (m) => m && m._streamingId === streamingId
+      )
+      if (idx !== -1) {
+        messages.value.splice(idx, 1, originalBubble)
       }
-    } catch (_e) {
-      /* ignore */
+    } else {
+      messages.value = messages.value.filter(
+        (m) => m?._streamingId !== streamingId
+      )
     }
   } finally {
     sending.value = false
     sendAbortController.value = null
+    if (painterId != null) {
+      cancelAnimationFrame(painterId)
+      painterId = null
+    }
+    if (messages.value.some((m) => m && m._streamingId === streamingId)) {
+      // Last-ditch cleanup in case both try/catch paths missed it.
+      messages.value = messages.value.filter(
+        (m) => m?._streamingId !== streamingId
+      )
+    }
   }
 }
 
@@ -1037,48 +1341,95 @@ async function handleWrapUp() {
   }
 }
 
-// ---- R-WRAPUP: Conversation-level Context Pack flow ----
-function openConversationWrapUp() {
-  if (!conversation.value) return
-  if (realMessageCount.value < 1) return
-  wrapUpOpen.value = true
+// ---- Phase 3 + 4 Wrap (project-memory Markdown) --------------------------
+
+function onWrapMenuSelect(kind) {
+  if (kind === 'routine-settings') {
+    // Settings dialog doesn't require an open conversation; the
+    // config is per-project.
+    routineSettingsOpen.value = true
+    return
+  }
+  if (!conversation.value || realMessageCount.value < 1) return
+  if (kind === 'quick') {
+    quickWrapOpen.value = true
+  } else if (kind === 'advanced') {
+    advancedWrapOpen.value = true
+  }
 }
 
-function closeConversationWrapUp() {
-  wrapUpOpen.value = false
-}
-
-function onConversationWrapUpSuccess(pack /*, job */) {
+function onWrapSaved(wrap) {
+  // Shared handler for Quick + Advanced + Routine dialogs — the
+  // wire payload is identical (SavedWrap), so the UX after a save
+  // is too. For Routine specifically, the review dialog has
+  // already called ``markRoutineRun``; here we just hide the
+  // banner and surface a toast.
+  if (!wrap) {
+    return
+  }
   toasts.push({
     kind: 'success',
-    message: `Wrap Up complete · "${pack?.title || 'Context Pack'}" saved.`,
-    link:
-      pack && project.value
-        ? {
-            name: 'project-context-pack',
-            params: {
-              id: String(project.value.id),
-              packId: String(pack.id)
-            }
-          }
-        : null,
-    linkText: pack ? 'View Context Pack' : ''
+    message: `Wrap saved · ${wrap.relativePath || wrap.filename}`,
+    // No deep-link target yet (Memory dashboard ships in a follow-up
+    // milestone). Keep the toast informational only.
+    duration: 6000
   })
-  // Refresh the pack picker list so the freshly-made pack is available
-  // for immediate attachment in the Prompt+ flow.
-  loadAvailablePacks()
+  // After a Routine save, the cadence resets server-side; mute the
+  // banner immediately and re-fetch to pick up the new lastRunAt.
+  routineReminderVisible.value = false
+  refreshRoutineStatus()
 }
 
-function onViewConversationWrapUpPack(pack) {
-  wrapUpOpen.value = false
-  if (!pack || !project.value) return
-  router.push({
-    name: 'project-context-pack',
-    params: {
-      id: String(project.value.id),
-      packId: String(pack.id)
-    }
-  })
+// ---- Phase 5 routine reminder ---------------------------------------------
+
+async function refreshRoutineStatus() {
+  if (!projectIdNum.value) return
+  try {
+    const data = await wrapsApi.getRoutineStatus(projectIdNum.value)
+    routineReminderConfig.value = data?.config || null
+    routineReminderVisible.value = Boolean(data?.shouldPrompt)
+  } catch (_err) {
+    // Failure here is non-blocking; the reminder simply stays
+    // hidden and the user can still reach Routine via the menu.
+    routineReminderVisible.value = false
+  }
+}
+
+function onRoutineSettingsSaved(_config) {
+  // Refresh the banner state — toggling Enable on may need to fire
+  // a brand-new reminder; toggling off must hide an existing one.
+  refreshRoutineStatus()
+}
+
+function onRoutineReminderReview() {
+  if (!conversation.value || realMessageCount.value < 1) {
+    toasts.push({
+      kind: 'info',
+      message:
+        'Open a conversation with at least one message to review a routine wrap.',
+      duration: 5000
+    })
+    return
+  }
+  routineReminderVisible.value = false
+  routineReviewOpen.value = true
+}
+
+async function onRoutineReminderDismiss() {
+  if (!projectIdNum.value || routineReminderBusy.value) return
+  routineReminderBusy.value = true
+  try {
+    await wrapsApi.dismissRoutine(projectIdNum.value)
+    routineReminderVisible.value = false
+  } catch (err) {
+    toasts.push({
+      kind: 'error',
+      message: 'Could not dismiss the routine reminder.',
+      duration: 5000
+    })
+  } finally {
+    routineReminderBusy.value = false
+  }
 }
 
 // ---- R13: Context Pack picker ----
@@ -1168,7 +1519,22 @@ function onContextAttach(items) {
   // Replace the current draft selection wholesale — the picker round-
   // trips the user's full intent each time it's opened, so the
   // returned list is authoritative.
-  selectedContextItems.value = Array.isArray(items) ? items.slice() : []
+  const next = Array.isArray(items) ? items.slice() : []
+  const prevCount = selectedContextItems.value.length
+  selectedContextItems.value = next
+  // Visible feedback so the user notices their picks landed in the
+  // composer chip row. We only toast when the count actually changed —
+  // re-opening the picker and confirming without edits stays silent.
+  if (next.length && next.length !== prevCount) {
+    toasts.push({
+      kind: 'info',
+      message:
+        next.length === 1
+          ? '1 note attached to the next message.'
+          : `${next.length} notes attached to the next message.`,
+      duration: 2200
+    })
+  }
 }
 
 function onContextInsert(markdownBlock) {
@@ -1192,6 +1558,15 @@ function removeContextItem(itemId) {
   selectedContextItems.value = selectedContextItems.value.filter(
     (it) => it.id !== itemId
   )
+}
+
+// Rotating tone (blue / amber / ink) used by the attached-context chip
+// row. Mirrors ChatContextPicker.noteTone so the chip color matches the
+// row color the user just clicked.
+function contextChipTone(id) {
+  const n = Number(id) || 0
+  const mod = ((n % 3) + 3) % 3
+  return mod === 0 ? 'blue' : mod === 1 ? 'amber' : 'ink'
 }
 
 async function selectPack(packId) {
@@ -1395,19 +1770,11 @@ onBeforeUnmount(() => {
               <span v-if="creatingNew" class="spinner" aria-hidden="true" />
               <span>New</span>
             </button>
-            <button
-              class="btn btn--ghost btn--sm"
-              type="button"
+            <WrapMenu
               :disabled="!canSummarize || sending"
-              :title="
-                !canSummarize
-                  ? 'Send at least one user/assistant exchange first'
-                  : 'Wrap this blabla into a reusable Context Pack'
-              "
-              @click="openConversationWrapUp"
-            >
-              <span>Wrap Up</span>
-            </button>
+              disabled-title="Send at least one user/assistant exchange first"
+              @select="onWrapMenuSelect"
+            />
           </div>
         </header>
 
@@ -1499,6 +1866,16 @@ onBeforeUnmount(() => {
              header. Project/conversation title is still available via the
              left sidebar list (active row) and the browser tab title. -->
 
+        <!-- Phase 5: Routine Wrap reminder. Hidden by default; surfaces
+             when ``GET /wraps/routine-status`` returns shouldPrompt=true. -->
+        <RoutineWrapReminder
+          :visible="routineReminderVisible"
+          :config="routineReminderConfig"
+          :busy="routineReminderBusy"
+          @review="onRoutineReminderReview"
+          @dismiss="onRoutineReminderDismiss"
+        />
+
         <div
           v-if="!hasKeyForSelectedProvider"
           class="banner banner--warning"
@@ -1539,7 +1916,7 @@ onBeforeUnmount(() => {
 
         <MessageList
           :messages="messages"
-          :pending="sending"
+          :pending="pendingPlaceholder"
           :highlight-id="highlightId"
           @copy="handleCopyMessage"
           @retry="handleRetryMessage"
@@ -1559,6 +1936,7 @@ onBeforeUnmount(() => {
             v-for="item in selectedContextItems"
             :key="item.id"
             class="chat-context-chip"
+            :class="`chat-context-chip--tone-${contextChipTone(item.id)}`"
           >
             <span class="chat-context-chip__kind">
               {{ item.type === 'bla_note' ? 'Note' : item.type }}
@@ -1607,6 +1985,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="btn btn--ghost btn--sm chat-context-add"
+              :class="{ 'chat-context-add--active': selectedContextItems.length > 0 }"
               :disabled="sending || !conversation"
               :title="
                 selectedContextItems.length
@@ -1782,14 +2161,31 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <WrapUpDialog
-      :open="wrapUpOpen"
-      scope="conversation"
+    <QuickWrapDialog
+      v-model:open="quickWrapOpen"
+      :project-id="projectIdNum"
       :conversation-id="conversation ? conversation.id : null"
-      :context-label="conversation ? conversation.title || 'Untitled conversation' : ''"
-      @close="closeConversationWrapUp"
-      @success="onConversationWrapUpSuccess"
-      @view-pack="onViewConversationWrapUpPack"
+      @saved="onWrapSaved"
+    />
+
+    <AdvancedWrapDialog
+      v-model:open="advancedWrapOpen"
+      :project-id="projectIdNum"
+      :conversation-id="conversation ? conversation.id : null"
+      @saved="onWrapSaved"
+    />
+
+    <RoutineWrapSettingsDialog
+      v-model:open="routineSettingsOpen"
+      :project-id="projectIdNum"
+      @saved="onRoutineSettingsSaved"
+    />
+
+    <RoutineWrapReviewDialog
+      v-model:open="routineReviewOpen"
+      :project-id="projectIdNum"
+      :conversation-id="conversation ? conversation.id : null"
+      @saved="onWrapSaved"
     />
 
     <ChatContextPicker
@@ -2677,6 +3073,35 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+/* Three-tone rotation. Mirrors ChatContextPicker — same note id, same
+   color, whether it's a list row in the picker or a chip in the
+   composer. Each tone defines its own background, text, border, and
+   remove-button hover state. */
+.chat-context-chip--tone-blue {
+  background: rgba(26, 115, 232, 0.10);
+  color: #1a73e8;
+  border-color: rgba(26, 115, 232, 0.35);
+}
+.chat-context-chip--tone-blue .chat-context-chip__remove:hover {
+  background: rgba(26, 115, 232, 0.18);
+}
+.chat-context-chip--tone-amber {
+  background: rgba(249, 171, 0, 0.14);
+  color: #b35900;
+  border-color: rgba(249, 171, 0, 0.45);
+}
+.chat-context-chip--tone-amber .chat-context-chip__remove:hover {
+  background: rgba(249, 171, 0, 0.22);
+}
+.chat-context-chip--tone-ink {
+  background: rgba(32, 33, 36, 0.08);
+  color: #202124;
+  border-color: rgba(32, 33, 36, 0.25);
+}
+.chat-context-chip--tone-ink .chat-context-chip__remove:hover {
+  background: rgba(32, 33, 36, 0.18);
+}
+
 .chat-context-chip__kind {
   font-size: 9px;
   text-transform: uppercase;
@@ -2722,6 +3147,17 @@ onBeforeUnmount(() => {
   font-size: var(--text-xs);
   font-weight: 500;
   height: 30px;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+/* "+ Context (N)" — when N>0 the button switches to a primary tint so
+   the user can see at a glance that the next send will include notes,
+   even when the chip row scrolls out of view on small screens. */
+.chat-context-add--active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-color: rgba(26, 115, 232, 0.45);
 }
 
 .chat-context-add__badge {

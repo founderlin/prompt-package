@@ -218,14 +218,6 @@ function onCopyClick() {
   }, 1200)
 }
 
-// Upper-right corner hover action: same "copy the plain content" as the
-// footer button, but visible without scrolling down to read the meta
-// row. Using a dedicated handler (vs reusing onCopyClick) lets us add
-// its own micro-feedback state in the future without coupling.
-function onHoverCopyClick() {
-  onCopyClick()
-}
-
 function onRetryClick() {
   if (!props.canRetry) return
   emit('retry', props.message)
@@ -689,52 +681,16 @@ function onDeleteClick() {
         class="bubble__content-wrap"
         :class="{ 'bubble__content-wrap--editing': editing }"
       >
-        <!-- Corner actions: only shown when we're not editing and the
-             message has a stable id (no in-flight placeholders). -->
+        <!-- Corner actions: only the Edit button (user bubbles).
+             The copy button was removed here — we keep a single
+             copy action in the footer toolbar below to avoid the
+             "two copy buttons per message" confusion. -->
         <div
-          v-if="!editing && !isSystem && message.id != null"
+          v-if="!editing && canEdit"
           class="bubble__corner-actions"
           aria-hidden="false"
         >
           <button
-            type="button"
-            class="bubble-corner-btn"
-            :title="copyFeedback || 'Copy message'"
-            :aria-label="copyFeedback || 'Copy message'"
-            @click="onHoverCopyClick"
-          >
-            <svg
-              v-if="!copyFeedback"
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="9" y="9" width="13" height="13" rx="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-            <svg
-              v-else
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.4"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          </button>
-          <button
-            v-if="canEdit"
             type="button"
             class="bubble-corner-btn"
             title="Edit message"

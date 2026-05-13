@@ -116,7 +116,10 @@
                 v-for="note in filteredNotes"
                 :key="note.id"
                 class="picker__item"
-                :class="{ 'picker__item--selected': isSelected(note.id) }"
+                :class="[
+                  `picker__item--tone-${noteTone(note.id)}`,
+                  { 'picker__item--selected': isSelected(note.id) }
+                ]"
                 @click="toggleSelection(note)"
               >
                 <div class="picker__item-check" aria-hidden="true">
@@ -401,6 +404,18 @@ function isSelected(id) {
   return selected.value.has(id)
 }
 
+// Rotating tone for note rows. Three buckets keyed off the note id so
+// the same note always picks the same color whether it's listed in
+// the picker or rendered as a chip in the composer. Buckets:
+//   0 → blue, 1 → amber, 2 → ink.
+// Kept here (and mirrored in ProjectChatView's chip styles) so the
+// "see the new context I just added" affordance is consistent.
+function noteTone(id) {
+  const n = Number(id) || 0
+  const mod = ((n % 3) + 3) % 3
+  return mod === 0 ? 'blue' : mod === 1 ? 'amber' : 'ink'
+}
+
 function toggleSelection(note) {
   const next = new Map(selected.value)
   if (next.has(note.id)) {
@@ -660,6 +675,28 @@ async function onInsert() {
 .picker__item:hover {
   border-color: var(--color-border-strong);
   background: var(--color-surface-muted);
+}
+
+/* Three-tone rotation so a long list reads at a glance. The left edge
+   is the strongest visual hint; the body stays subtle so dense lists
+   don't fatigue the eye. */
+.picker__item--tone-blue {
+  border-left: 4px solid #1a73e8;
+}
+.picker__item--tone-amber {
+  border-left: 4px solid #f9ab00;
+}
+.picker__item--tone-ink {
+  border-left: 4px solid #202124;
+}
+.picker__item--tone-blue.picker__item--selected {
+  background: rgba(26, 115, 232, 0.08);
+}
+.picker__item--tone-amber.picker__item--selected {
+  background: rgba(249, 171, 0, 0.12);
+}
+.picker__item--tone-ink.picker__item--selected {
+  background: rgba(32, 33, 36, 0.06);
 }
 
 .picker__item--selected {

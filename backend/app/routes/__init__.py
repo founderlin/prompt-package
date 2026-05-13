@@ -15,6 +15,7 @@ from .search import search_bp
 from .settings import settings_bp
 from .usage import usage_bp
 from .wrap_up_jobs import wrap_up_jobs_bp
+from .wraps import wraps_bp
 
 
 def register_blueprints(app: Flask) -> None:
@@ -29,3 +30,6 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(search_bp, url_prefix="/api/search")
     app.register_blueprint(usage_bp, url_prefix="/api/usage")
     app.register_blueprint(wrap_up_jobs_bp, url_prefix="/api/wrap-up-jobs")
+    # Wrap (project memory) routes use ``/api`` directly because they
+    # nest under ``/projects/<pid>/...`` — they're not a flat resource.
+    app.register_blueprint(wraps_bp, url_prefix="/api")
