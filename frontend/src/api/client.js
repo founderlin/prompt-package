@@ -14,12 +14,14 @@ import axios from 'axios'
 // and ships a bundle that calls http://127.0.0.1:5001 from the user's
 // browser, getting blocked by CORS + private network access policy.
 const envBaseURL = import.meta.env.VITE_API_BASE_URL
-const baseURL =
+const _rawBaseURL =
   envBaseURL !== undefined
     ? envBaseURL
     : import.meta.env.DEV
       ? 'http://127.0.0.1:5001'
       : ''
+
+const baseURL = _rawBaseURL === '/' ? '' : _rawBaseURL.replace(/\/+$/, '')
 
 // Exported so non-axios callers (e.g. ``fetch`` + ``ReadableStream`` for
 // SSE chat streaming) can hit the same backend in dev *and* prod
